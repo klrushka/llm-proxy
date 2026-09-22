@@ -12,6 +12,32 @@ import (
 // a scope, token, original value or text.
 var ErrNilVault = errors.New("tokenization: nil vault")
 
+// ErrVaultSave reports that a mapping could not be persisted to the vault. The
+// returned error has a fixed safe Error() that never embeds the underlying
+// message, scope, token, original value or text, while errors.Is still
+// classifies the original cause.
+var ErrVaultSave = errors.New("tokenization: vault save failed")
+
+// vaultSaveError wraps a vault.Save failure so the returned error has a fixed,
+// safe Error() text while preserving causal classification through errors.Is.
+// It never exposes the underlying message, scope, token, original value or
+// plaintext.
+type vaultSaveError struct {
+	cause error
+}
+
+func (e *vaultSaveError) Error() string {
+	return ErrVaultSave.Error()
+}
+
+func (e *vaultSaveError) Unwrap() error {
+	return e.cause
+}
+
+func (e *vaultSaveError) Is(target error) bool {
+	return target == ErrVaultSave
+}
+
 // ReplaceAndPersist tokenizes confirmed personal entities in text for the given
 // scope and persists every mapping to the vault before returning any tokenized
 // text.
@@ -27,8 +53,11 @@ var ErrNilVault = errors.New("tokenization: nil vault")
 // the caller. No rollback is attempted because the Vault interface does not
 // expose one; the guarantee of this operation is that tokenized text is never
 // disclosed on failure. A nil vault returns ErrNilVault. A cancelled context is
-// propagated from vault.Save as its wrapped context error. Errors returned here
-// never embed the text, original value, token or scope.
+// propagated from vault.Save as its wrapped context error. A Save failure is
+// wrapped so the returned error has a fixed safe Error() text that never embeds
+// the underlying message, scope, token, original value or text, while errors.Is
+// still classifies the original cause. Errors returned here never embed the
+// text, original value, token or scope.
 func ReplaceAndPersist(ctx context.Context, text, scope string, results []ownership.Entity, issuer TokenIssuer, v vault.Vault) (ReplaceResult, error) {
 	var out ReplaceResult
 	if v == nil {
@@ -52,7 +81,7 @@ func ReplaceAndPersist(ctx context.Context, text, scope string, results []owners
 		}
 		original := text[r.Entity.Start:r.Entity.End]
 		if err := v.Save(ctx, scope, r.Token, original); err != nil {
-			return out, err
+			return out, &vaultSaveError{cause: err}
 		}
 	}
 	return res, nil

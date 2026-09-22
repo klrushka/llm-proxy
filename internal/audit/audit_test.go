@@ -30,14 +30,20 @@ var allowedKeys = []string{
 // syntheticMarkers are plaintext values that must never appear in log output.
 // They are the kind of values the detection pipeline would find but that the
 // audit logger must never receive or emit. Each marker is a unique full
-// plaintext fragment (name, email, card, CVV, PIN) that cannot accidentally
-// collide with allowlisted metadata such as duration_ms or type names.
+// plaintext fragment (name, email, card, CVV, PIN, Authorization, ciphertext,
+// encryption key, request/response body) that cannot accidentally collide with
+// allowlisted metadata such as duration_ms or type names.
 var syntheticMarkers = []string{
 	"ТЕСТОВ ТЕСТ ТЕСТОВИЧ",
 	"test@example.com",
 	"1234 5678 9012 3456",
 	"CVV: 739",
 	"PIN: 8642",
+	"Bearer AUTHZ_MARKER_33333",
+	"CIPHERTEXT_MARKER_44444",
+	"ENCKEY_MARKER_55555",
+	"REQ_BODY_MARKER_11111",
+	"RESP_BODY_MARKER_22222",
 }
 
 func sampleEvent() Event {

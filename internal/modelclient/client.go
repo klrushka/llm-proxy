@@ -252,10 +252,32 @@ func validateEntity(w entityWire, boundaries []int, runeCount int) (Entity, bool
 	}, true
 }
 
+// transportError wraps a transport error so it matches ErrModelUnavailable
+// while preserving context identity (context.Canceled / DeadlineExceeded).
+// Its Error() text is fixed and safe: it never embeds the underlying error
+// message, which could carry request/response body, Authorization, ciphertext,
+// keys, CVV or PIN. errors.Is still classifies both the sentinel and the
+// original cause.
+type transportError struct {
+	cause error
+}
+
+func (e *transportError) Error() string {
+	return ErrModelUnavailable.Error()
+}
+
+func (e *transportError) Unwrap() error {
+	return e.cause
+}
+
+func (e *transportError) Is(target error) bool {
+	return target == ErrModelUnavailable
+}
+
 // wrapTransport wraps a transport error so it matches ErrModelUnavailable
 // while preserving context identity (context.Canceled / DeadlineExceeded).
-// Both the sentinel and the underlying error are in the wrap chain so
-// errors.Is matches either.
+// The returned error has a fixed safe Error() text that never embeds the
+// underlying message, while errors.Is still classifies the original cause.
 func wrapTransport(err error) error {
-	return fmt.Errorf("%w: %w", ErrModelUnavailable, err)
+	return &transportError{cause: err}
 }

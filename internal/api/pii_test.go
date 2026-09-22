@@ -270,3 +270,71 @@ func TestPIIWrongMethodReturns405(t *testing.T) {
 		}
 	}
 }
+
+// forbiddenMarkers are unique synthetic values that must never appear in any
+// HTTP error response body. They cover request body, response body,
+// Authorization, ciphertext, encryption key, CVV and PIN.
+var forbiddenMarkers = []string{
+	"REQ_BODY_MARKER_11111",
+	"RESP_BODY_MARKER_22222",
+	"AUTHZ_MARKER_33333",
+	"CIPHERTEXT_MARKER_44444",
+	"ENCKEY_MARKER_55555",
+	"CVV_MARKER_66666",
+	"PIN_MARKER_77777",
+}
+
+// TestPIIErrorResponseDoesNotLeakMarkers proves that /v1/pii/* error responses
+// never reflect the request body, the Authorization header, or an injected
+// dependency error that embeds forbidden markers.
+func TestPIIErrorResponseDoesNotLeakMarkers(t *testing.T) {
+	const authz = "Bearer AUTHZ_MARKER_33333"
+	const text = "text REQ_BODY_MARKER_11111 CVV_MARKER_66666 PIN_MARKER_77777"
+	depErr := errors.New(strings.Join(forbiddenMarkers, " "))
+
+	cases := []struct {
+		name string
+		path string
+		body string
+		h    PIIHandlers
+	}{
+		{"detect", "/v1/pii/detect", `{"text":"` + text + `"}`,
+			PIIHandlers{Detect: func(_ context.Context, _ DetectRequest) (DetectResponse, error) {
+				return DetectResponse{}, depErr
+			}}},
+		{"tokenize", "/v1/pii/tokenize", `{"text":"` + text + `","scope_id":"s1"}`,
+			PIIHandlers{Tokenize: func(_ context.Context, _ TokenizeRequest) (TokenizeResponse, error) {
+				return TokenizeResponse{}, depErr
+			}}},
+		{"detokenize", "/v1/pii/detokenize", `{"text":"` + text + `","scope_id":"s1","mode":"strict"}`,
+			PIIHandlers{Detokenize: func(_ context.Context, _ DetokenizeRequest) (DetokenizeResponse, error) {
+				return DetokenizeResponse{}, depErr
+			}}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mux := NewRouter(nil, nil, WithPIIHandlers(tc.h))
+			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+			req.Header.Set("Authorization", authz)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusInternalServerError {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+			}
+			body := rec.Body.String()
+			for _, m := range forbiddenMarkers {
+				if strings.Contains(body, m) {
+					t.Errorf("response leaks forbidden marker %q: %q", m, body)
+				}
+			}
+			if strings.Contains(body, text) {
+				t.Errorf("response leaks request body: %q", body)
+			}
+			if strings.Contains(body, authz) {
+				t.Errorf("response leaks Authorization header: %q", body)
+			}
+		})
+	}
+}

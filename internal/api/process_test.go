@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -313,5 +314,44 @@ func TestProcessRetryAfterAbsentOnNonOverload(t *testing.T) {
 				t.Errorf("Retry-After = %q, want absent", got)
 			}
 		})
+	}
+}
+
+// forbiddenMarkers are unique synthetic values that must never appear in any
+// HTTP error response body. They are declared in pii_test.go (same package).
+// They cover request body, response body, Authorization, ciphertext, encryption
+// key, CVV and PIN.
+
+// TestProcessErrorResponseDoesNotLeakMarkers proves that a /process error
+// response never reflects the request body, the Authorization header, or an
+// injected dependency error that embeds forbidden markers.
+func TestProcessErrorResponseDoesNotLeakMarkers(t *testing.T) {
+	const authz = "Bearer AUTHZ_MARKER_33333"
+	const payload = "payload REQ_BODY_MARKER_11111 CVV_MARKER_66666 PIN_MARKER_77777"
+	depErr := errors.New(strings.Join(forbiddenMarkers, " "))
+	h := ProcessFunc(func(_ context.Context, _ process.Request) (process.Response, error) {
+		return process.Response{}, depErr
+	})
+	mux := NewRouter(nil, nil, WithProcess(h))
+
+	req := httptest.NewRequest(http.MethodPost, "/process", strings.NewReader(`{"payload":"`+payload+`","payload_id":"p1"}`))
+	req.Header.Set("Authorization", authz)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+	body := rec.Body.String()
+	for _, m := range forbiddenMarkers {
+		if strings.Contains(body, m) {
+			t.Errorf("response leaks forbidden marker %q: %q", m, body)
+		}
+	}
+	if strings.Contains(body, payload) {
+		t.Errorf("response leaks request body: %q", body)
+	}
+	if strings.Contains(body, authz) {
+		t.Errorf("response leaks Authorization header: %q", body)
 	}
 }

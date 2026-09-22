@@ -125,6 +125,55 @@ func TestReplaceAndPersistErrorLeaksNoSyntheticPII(t *testing.T) {
 	}
 }
 
+// forbiddenMarkers are unique synthetic values that must never appear in any
+// error text produced by ReplaceAndPersist. They cover request body, response
+// body, Authorization, ciphertext, encryption key, CVV and PIN.
+var forbiddenMarkers = []string{
+	"REQ_BODY_MARKER_11111",
+	"RESP_BODY_MARKER_22222",
+	"AUTHZ_MARKER_33333",
+	"CIPHERTEXT_MARKER_44444",
+	"ENCKEY_MARKER_55555",
+	"CVV_MARKER_66666",
+	"PIN_MARKER_77777",
+}
+
+// TestReplaceAndPersistVaultSaveErrorTextIsSafe proves that a vault.Save
+// failure whose underlying error message embeds forbidden markers never
+// reflects them in the returned error text, while errors.Is still classifies
+// both the sentinel and the cause, and the result is strictly empty.
+func TestReplaceAndPersistVaultSaveErrorTextIsSafe(t *testing.T) {
+	text := "Клиент Иванов Иван, телефон +7 900 123-45-67, email ivanov@example.com"
+	results := persistEntities(t, text)
+	cause := errors.New(strings.Join(forbiddenMarkers, " "))
+	fv := &fakeVault{failAt: 1, failErr: cause}
+
+	got, err := ReplaceAndPersist(context.Background(), text, "scope-1", results, &fakeIssuer{tokens: map[string]string{}}, fv)
+	if err == nil {
+		t.Fatal("ReplaceAndPersist() error = nil, want failure")
+	}
+	if !errors.Is(err, cause) {
+		t.Errorf("errors.Is(cause) = false, want true")
+	}
+	if !errors.Is(err, ErrVaultSave) {
+		t.Errorf("errors.Is(ErrVaultSave) = false, want true")
+	}
+	if err.Error() != ErrVaultSave.Error() {
+		t.Errorf("Error() = %q, want fixed safe text %q", err.Error(), ErrVaultSave.Error())
+	}
+	for _, m := range forbiddenMarkers {
+		if strings.Contains(err.Error(), m) {
+			t.Errorf("error leaks forbidden marker %q: %q", m, err.Error())
+		}
+	}
+	if got.Text != "" {
+		t.Errorf("Text = %q, want empty on vault Save failure", got.Text)
+	}
+	if len(got.Replacements) != 0 {
+		t.Errorf("Replacements = %+v, want none on vault Save failure", got.Replacements)
+	}
+}
+
 func TestReplaceAndPersistSuccessSavesAllMappings(t *testing.T) {
 	text := "Клиент Иванов Иван, телефон +7 900 123-45-67, email ivanov@example.com"
 	results := persistEntities(t, text)

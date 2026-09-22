@@ -342,3 +342,91 @@ func TestErrorsDoNotLeakInputOrBody(t *testing.T) {
 		t.Errorf("error leaks body marker: %q", err.Error())
 	}
 }
+
+// forbiddenMarkers are unique synthetic values that must never appear in any
+// error text produced by the model client. They cover request body, response
+// body, Authorization, ciphertext, encryption key, CVV and PIN.
+var forbiddenMarkers = []string{
+	"REQ_BODY_MARKER_11111",
+	"RESP_BODY_MARKER_22222",
+	"AUTHZ_MARKER_33333",
+	"CIPHERTEXT_MARKER_44444",
+	"ENCKEY_MARKER_55555",
+	"CVV_MARKER_66666",
+	"PIN_MARKER_77777",
+}
+
+// TestTransportErrorTextIsSafe proves that a transport failure whose underlying
+// error message embeds forbidden markers never reflects them in the returned
+// error text, while errors.Is still classifies both the sentinel and the cause.
+func TestTransportErrorTextIsSafe(t *testing.T) {
+	cause := errors.New(strings.Join(forbiddenMarkers, " "))
+	err := wrapTransport(cause)
+	if err == nil {
+		t.Fatal("wrapTransport() = nil")
+	}
+	if !errors.Is(err, ErrModelUnavailable) {
+		t.Errorf("errors.Is(ErrModelUnavailable) = false, want true")
+	}
+	if !errors.Is(err, cause) {
+		t.Errorf("errors.Is(cause) = false, want true")
+	}
+	if err.Error() != ErrModelUnavailable.Error() {
+		t.Errorf("Error() = %q, want fixed safe text %q", err.Error(), ErrModelUnavailable.Error())
+	}
+	for _, m := range forbiddenMarkers {
+		if strings.Contains(err.Error(), m) {
+			t.Errorf("error leaks forbidden marker %q: %q", m, err.Error())
+		}
+	}
+}
+
+// TestInferTransportErrorDoesNotLeakMarkers drives the real reachable transport
+// path: a connection failure whose underlying error text embeds forbidden
+// markers must not reflect them in the returned error text.
+func TestInferTransportErrorDoesNotLeakMarkers(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	url := srv.URL
+	srv.Close()
+
+	c, err := New(url, ModeFull, time.Second)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	_, err = c.Infer(context.Background(), strings.Join(forbiddenMarkers, " "))
+	if err == nil {
+		t.Fatal("Infer() expected error")
+	}
+	if !errors.Is(err, ErrModelUnavailable) {
+		t.Fatalf("Infer() error = %v, want ErrModelUnavailable", err)
+	}
+	for _, m := range forbiddenMarkers {
+		if strings.Contains(err.Error(), m) {
+			t.Errorf("error leaks forbidden marker %q: %q", m, err.Error())
+		}
+	}
+}
+
+// TestInferResponseErrorDoesNotLeakMarkers drives the real reachable response
+// path: a worker response body that embeds forbidden markers must not reflect
+// them in the returned error text.
+func TestInferResponseErrorDoesNotLeakMarkers(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"entities":[],"`+strings.Join(forbiddenMarkers, "_")+`":1}`)
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv, ModeFull).Infer(context.Background(), "Анна")
+	if err == nil {
+		t.Fatal("Infer() expected error")
+	}
+	if !errors.Is(err, ErrInvalidResponse) {
+		t.Fatalf("Infer() error = %v, want ErrInvalidResponse", err)
+	}
+	for _, m := range forbiddenMarkers {
+		if strings.Contains(err.Error(), m) {
+			t.Errorf("error leaks forbidden marker %q: %q", m, err.Error())
+		}
+	}
+}
