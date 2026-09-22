@@ -38,44 +38,49 @@ func NewOperation(store *Store, mask MaskFunc) *Operation {
 // re-masking. Passing the previously issued result (mask) restores the
 // original without re-masking and is a repeatable read that does not change
 // the record. A masking error fails closed (no plaintext) and expires the
-// claim.
+// claim. Concurrent first requests for the same payload_id are coordinated by
+// a single writer: only the goroutine that wins the claim invokes the masker,
+// and the others wait for the winner to resolve before classifying their
+// payload against the stored record.
 func (o *Operation) Handle(ctx context.Context, req Request) (Response, error) {
 	rec, err := o.store.Get(req.PayloadID)
 	switch {
 	case errors.Is(err, ErrNotFound):
-		return o.handleNew(ctx, req)
+		return o.handleFirst(ctx, req)
 	case err != nil:
 		return Response{}, err
 	}
 
-	if rec.State == StateReady {
-		switch req.Payload {
-		case rec.Original:
-			// Idempotent retry of the original: return the stored mask.
-			return Response{Result: rec.Result}, nil
-		case rec.Result:
-			// Restore by previously issued mask: return the original without
-			// re-masking. Repeatable read; the record stays ready.
-			return Response{Result: rec.Original}, nil
-		default:
-			// Third unrelated payload for an existing ready record: safe
-			// conflict. The record is left unchanged and masking is not
-			// re-invoked.
-			return Response{}, ErrConflict
-		}
+	switch rec.State {
+	case StateReady:
+		return o.classifyReady(req, rec)
+	case StateClaim:
+		// A concurrent first request holds the claim. Wait for it to resolve,
+		// then classify against the resolved record.
+		return o.handleWaiter(ctx, req)
+	default:
+		// StateExpired is terminal; direct handling of an already-expired
+		// record is an invalid transition.
+		return Response{}, ErrInvalidTransition
 	}
-	return Response{}, ErrInvalidTransition
 }
 
-func (o *Operation) handleNew(ctx context.Context, req Request) (Response, error) {
+// handleFirst is the single-writer path for a new payload_id. It wins the
+// claim, invokes the masker exactly once, and resolves the claim to ready or
+// expired. If it loses the claim race to a concurrent first request, it waits
+// for the winner to resolve instead of surfacing ErrExists.
+func (o *Operation) handleFirst(ctx context.Context, req Request) (Response, error) {
 	if _, err := o.store.CreateClaim(req.PayloadID, req.Payload); err != nil {
+		if errors.Is(err, ErrExists) {
+			return o.handleWaiter(ctx, req)
+		}
 		return Response{}, err
 	}
 
 	result, err := o.mask(ctx, req.Payload)
 	if err != nil {
 		// Fail closed: never return plaintext or the dependency error (which
-		// may carry the input). Expire the claim safely.
+		// may carry the input). Expire the claim safely and wake waiters.
 		_ = o.store.Transition(req.PayloadID, StateClaim, StateExpired)
 		return Response{}, ErrMaskingFailed
 	}
@@ -84,4 +89,44 @@ func (o *Operation) handleNew(ctx context.Context, req Request) (Response, error
 		return Response{}, err
 	}
 	return Response{Result: result}, nil
+}
+
+// handleWaiter blocks until the in-flight claim for req.PayloadID resolves,
+// then classifies the request against the resolved record. It never invokes
+// the masker. If the winning claim expired because masking failed, it fails
+// closed with ErrMaskingFailed and an empty response.
+func (o *Operation) handleWaiter(ctx context.Context, req Request) (Response, error) {
+	rec, err := o.store.WaitReady(ctx, req.PayloadID)
+	if err != nil {
+		return Response{}, err
+	}
+	switch rec.State {
+	case StateReady:
+		return o.classifyReady(req, rec)
+	case StateExpired:
+		// The winning claim failed closed; expired is terminal and must not be
+		// re-claimed from this call.
+		return Response{}, ErrMaskingFailed
+	default:
+		return Response{}, ErrInvalidTransition
+	}
+}
+
+// classifyReady applies the ready-record semantics shared by the direct path
+// and waiters: original retry returns the stored mask, restore by the issued
+// mask returns the original, and any other payload is a safe conflict.
+func (o *Operation) classifyReady(req Request, rec *Record) (Response, error) {
+	switch req.Payload {
+	case rec.Original:
+		// Idempotent retry of the original: return the stored mask.
+		return Response{Result: rec.Result}, nil
+	case rec.Result:
+		// Restore by previously issued mask: return the original without
+		// re-masking. Repeatable read; the record stays ready.
+		return Response{Result: rec.Original}, nil
+	default:
+		// Third unrelated payload for an existing ready record: safe conflict.
+		// The record is left unchanged and masking is not re-invoked.
+		return Response{}, ErrConflict
+	}
 }

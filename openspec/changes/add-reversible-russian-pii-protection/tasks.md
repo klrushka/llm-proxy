@@ -37,7 +37,7 @@
 - [x] 1.5 Реализовать идемпотентный retry оригинала (повтор исходного payload возвращает ту же маску); observable check: idempotency unit tests проходят.
 - [x] 1.6 Реализовать восстановление по ранее выданной маске без NER (repeatable read); observable check: restore unit tests проходят.
 - [x] 1.7 Реализовать безопасный `409` для третьего несвязанного payload без изменения записи; observable check: conflict unit tests проходят.
-- [ ] 1.8 Реализовать atomic claim/single writer для конкурентного первого запроса; observable check: concurrency unit tests проходят.
+- [x] 1.8 Реализовать atomic claim/single writer для конкурентного первого запроса; observable check: concurrency unit tests проходят.
 
 ## 2. Overload и backpressure (WS-A)
 

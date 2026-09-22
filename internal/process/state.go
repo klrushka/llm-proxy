@@ -1,6 +1,7 @@
 package process
 
 import (
+	"context"
 	"errors"
 	"sync"
 )
@@ -42,12 +43,21 @@ func CanTransition(from, to RecordState) bool {
 // Store is an in-memory record state machine keyed by payload_id.
 type Store struct {
 	mu      sync.Mutex
-	records map[string]*Record
+	records map[string]*entry
+}
+
+// entry is the private per-payload_id store entry. It pairs the domain Record
+// with a done channel used to coordinate concurrent first requests. The done
+// channel is closed exactly once when the record leaves StateClaim (to ready
+// or expired), waking any waiters. It is never exposed through Record.
+type entry struct {
+	rec  *Record
+	done chan struct{}
 }
 
 // NewStore returns an empty Store.
 func NewStore() *Store {
-	return &Store{records: make(map[string]*Record)}
+	return &Store{records: make(map[string]*entry)}
 }
 
 // CreateClaim atomically creates a new record in claim state for payload_id.
@@ -59,13 +69,16 @@ func (s *Store) CreateClaim(payloadID, original string) (*Record, error) {
 	if _, ok := s.records[payloadID]; ok {
 		return nil, ErrExists
 	}
-	rec := &Record{
-		PayloadID: payloadID,
-		State:     StateClaim,
-		Original:  original,
+	e := &entry{
+		rec: &Record{
+			PayloadID: payloadID,
+			State:     StateClaim,
+			Original:  original,
+		},
+		done: make(chan struct{}),
 	}
-	s.records[payloadID] = rec
-	return rec.snapshot(), nil
+	s.records[payloadID] = e
+	return e.rec.snapshot(), nil
 }
 
 // Get returns a snapshot copy of the record for payload_id, or ErrNotFound.
@@ -74,11 +87,49 @@ func (s *Store) CreateClaim(payloadID, original string) (*Record, error) {
 func (s *Store) Get(payloadID string) (*Record, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rec, ok := s.records[payloadID]
+	e, ok := s.records[payloadID]
 	if !ok {
 		return nil, ErrNotFound
 	}
-	return rec.snapshot(), nil
+	return e.rec.snapshot(), nil
+}
+
+// WaitReady blocks until the record for payload_id leaves StateClaim (becomes
+// ready or expired), or until ctx is done. It returns ErrNotFound if no record
+// exists. If the record is already ready or expired it returns an immediate
+// snapshot. For a claim in progress it captures the private per-entry done
+// channel under the store mutex, releases the mutex, and selects on the
+// channel versus ctx.Done(). The returned record is a detached snapshot and
+// never exposes the coordination channel.
+func (s *Store) WaitReady(ctx context.Context, payloadID string) (*Record, error) {
+	s.mu.Lock()
+	e, ok := s.records[payloadID]
+	if !ok {
+		s.mu.Unlock()
+		return nil, ErrNotFound
+	}
+	if e.rec.State != StateClaim {
+		rec := e.rec.snapshot()
+		s.mu.Unlock()
+		return rec, nil
+	}
+	done := e.done
+	s.mu.Unlock()
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	// The record has left StateClaim; return a fresh detached snapshot.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok = s.records[payloadID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return e.rec.snapshot(), nil
 }
 
 // snapshot returns a detached copy of the record. It must be called while the
@@ -92,37 +143,42 @@ func (r *Record) snapshot() *Record {
 }
 
 // CompleteClaim atomically sets the result on a claim record and transitions
-// it to ready. It returns ErrNotFound if no record exists and
-// ErrInvalidTransition if the record is not in claim state.
+// it to ready, waking any waiters. It returns ErrNotFound if no record exists
+// and ErrInvalidTransition if the record is not in claim state.
 func (s *Store) CompleteClaim(payloadID, result string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rec, ok := s.records[payloadID]
+	e, ok := s.records[payloadID]
 	if !ok {
 		return ErrNotFound
 	}
-	if rec.State != StateClaim {
+	if e.rec.State != StateClaim {
 		return ErrInvalidTransition
 	}
-	rec.Result = result
-	rec.State = StateReady
+	e.rec.Result = result
+	e.rec.State = StateReady
+	close(e.done)
 	return nil
 }
 
 // Transition moves the record for payload_id from from to to, validating the
 // transition. It returns ErrNotFound if no record exists and
 // ErrInvalidTransition if the current state does not match from or the
-// transition is not allowed.
+// transition is not allowed. When the transition moves a record out of
+// StateClaim (to ready or expired), any waiters are woken exactly once.
 func (s *Store) Transition(payloadID string, from, to RecordState) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	rec, ok := s.records[payloadID]
+	e, ok := s.records[payloadID]
 	if !ok {
 		return ErrNotFound
 	}
-	if rec.State != from || !CanTransition(from, to) {
+	if e.rec.State != from || !CanTransition(from, to) {
 		return ErrInvalidTransition
 	}
-	rec.State = to
+	e.rec.State = to
+	if from == StateClaim {
+		close(e.done)
+	}
 	return nil
 }

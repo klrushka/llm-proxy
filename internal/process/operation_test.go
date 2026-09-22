@@ -4,12 +4,29 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
 // compile-time check that Operation.Handle is signature-compatible with
 // api.ProcessFunc (func(context.Context, Request) (Response, error)).
 var _ func(context.Context, Request) (Response, error) = (&Operation{}).Handle
+
+// signalCtx wraps a context and closes a channel the first time Done() is
+// called. Store.WaitReady evaluates ctx.Done() in its waiting select, so this
+// lets tests observe deterministically that a waiter has reached the
+// context-aware wait rather than merely that its goroutine was launched.
+type signalCtx struct {
+	context.Context
+	once sync.Once
+	done chan struct{}
+}
+
+func (c *signalCtx) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.done) })
+	return c.Context.Done()
+}
 
 func TestOperationNewPayloadMasksOnce(t *testing.T) {
 	calls := 0
@@ -242,4 +259,286 @@ func TestOperationThirdUnrelatedPayloadConflicts(t *testing.T) {
 	if after.Original != "synthetic original" || after.Result != first.Result {
 		t.Errorf("record content changed: original=%q result=%q", after.Original, after.Result)
 	}
+}
+
+func TestConcurrentIdenticalFirstRequestsShareResult(t *testing.T) {
+	const (
+		payload   = "synthetic original"
+		payloadID = "id-1"
+	)
+	var calls atomic.Int64
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	op := NewOperation(NewStore(), func(_ context.Context, p string) (string, error) {
+		calls.Add(1)
+		close(entered)
+		<-release
+		return "masked:" + p, nil
+	})
+
+	const n = 8
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	results := make([]string, n)
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			resp, err := op.Handle(context.Background(), Request{Payload: payload, PayloadID: payloadID})
+			results[i] = resp.Result
+			errs[i] = err
+		}(i)
+	}
+	close(start)
+	// Wait until the masker has been entered (the winner is in flight) before
+	// releasing it, so all callers are racing on the same claim.
+	<-entered
+	close(release)
+	wg.Wait()
+
+	if got := calls.Load(); got != 1 {
+		t.Errorf("mask calls = %d, want 1", got)
+	}
+	for i := 0; i < n; i++ {
+		if errs[i] != nil {
+			t.Fatalf("caller %d error = %v", i, errs[i])
+		}
+		if results[i] != "masked:"+payload {
+			t.Errorf("caller %d result = %q, want %q", i, results[i], "masked:"+payload)
+		}
+	}
+
+	rec, err := op.store.Get(payloadID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if rec.State != StateReady || rec.Result != "masked:"+payload {
+		t.Errorf("record = %+v, want ready with shared result", rec)
+	}
+}
+
+func TestConcurrentDifferentFirstPayloadsOneWinner(t *testing.T) {
+	const payloadID = "id-1"
+	var calls atomic.Int64
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	op := NewOperation(NewStore(), func(_ context.Context, p string) (string, error) {
+		calls.Add(1)
+		close(entered)
+		<-release
+		return "masked:" + p, nil
+	})
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	type outcome struct {
+		result string
+		err    error
+	}
+	outcomes := make([]outcome, 2)
+	payloads := []string{"first payload", "second payload"}
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			resp, err := op.Handle(context.Background(), Request{Payload: payloads[i], PayloadID: payloadID})
+			outcomes[i] = outcome{result: resp.Result, err: err}
+		}(i)
+	}
+	close(start)
+	<-entered
+	close(release)
+	wg.Wait()
+
+	if got := calls.Load(); got != 1 {
+		t.Errorf("mask calls = %d, want 1", got)
+	}
+
+	var winner, loser int
+	if outcomes[0].err == nil {
+		winner, loser = 0, 1
+	} else {
+		winner, loser = 1, 0
+	}
+	if outcomes[winner].err != nil {
+		t.Fatalf("winner error = %v, want nil", outcomes[winner].err)
+	}
+	if outcomes[winner].result != "masked:"+payloads[winner] {
+		t.Errorf("winner result = %q, want %q", outcomes[winner].result, "masked:"+payloads[winner])
+	}
+	if !errors.Is(outcomes[loser].err, ErrConflict) {
+		t.Errorf("loser error = %v, want ErrConflict", outcomes[loser].err)
+	}
+	if outcomes[loser].result != "" {
+		t.Errorf("loser result = %q, want empty", outcomes[loser].result)
+	}
+
+	rec, err := op.store.Get(payloadID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if rec.Original != payloads[winner] || rec.Result != "masked:"+payloads[winner] {
+		t.Errorf("record = %+v, want winner's original/result (not overwritten)", rec)
+	}
+}
+
+func TestConcurrentWaiterContextCancellation(t *testing.T) {
+	const payloadID = "id-1"
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	op := NewOperation(NewStore(), func(_ context.Context, p string) (string, error) {
+		close(entered)
+		<-release
+		return "masked:" + p, nil
+	})
+
+	// The winner claims first and blocks in the masker; the waiter then waits
+	// on the in-flight claim and is cancelled only after it has definitely
+	// entered the context-aware wait in Store.WaitReady.
+	winnerDone := make(chan struct{})
+	var winnerErr error
+	go func() {
+		_, winnerErr = op.Handle(context.Background(), Request{Payload: "winner payload", PayloadID: payloadID})
+		close(winnerDone)
+	}()
+	<-entered
+
+	ctx, cancel := context.WithCancel(context.Background())
+	waiterInWait := make(chan struct{})
+	waiterDone := make(chan struct{})
+	var waiterErr error
+	go func() {
+		_, waiterErr = op.Handle(&signalCtx{Context: ctx, done: waiterInWait}, Request{Payload: "waiter payload", PayloadID: payloadID})
+		close(waiterDone)
+	}()
+
+	// Wait until the waiter has reached the WaitReady select before cancelling.
+	<-waiterInWait
+	cancel()
+	select {
+	case <-waiterDone:
+	case <-winnerDone:
+		t.Fatal("winner finished before waiter was cancelled")
+	}
+	if !errors.Is(waiterErr, context.Canceled) {
+		t.Errorf("waiter error = %v, want context.Canceled", waiterErr)
+	}
+
+	close(release)
+	<-winnerDone
+	if winnerErr != nil {
+		t.Errorf("winner error = %v, want nil", winnerErr)
+	}
+}
+
+func TestConcurrentMaskingFailureReleasesWaiters(t *testing.T) {
+	const payloadID = "id-1"
+	var calls atomic.Int64
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	op := NewOperation(NewStore(), func(_ context.Context, p string) (string, error) {
+		calls.Add(1)
+		close(entered)
+		<-release
+		return "", errors.New("masking failed: " + p)
+	})
+
+	// Start the owner first and wait until it has claimed and entered the
+	// blocked masker, so the claim is definitely held before the waiter starts.
+	ownerDone := make(chan struct{})
+	var ownerResp Response
+	var ownerErr error
+	go func() {
+		ownerResp, ownerErr = op.Handle(context.Background(), Request{Payload: "synthetic payload", PayloadID: payloadID})
+		close(ownerDone)
+	}()
+	<-entered
+
+	// Start the waiter second and wait until it has reached the WaitReady
+	// select before releasing the owner. This guarantees the waiter observes
+	// the expired record through the done channel, not the direct-expired path.
+	waiterInWait := make(chan struct{})
+	waiterDone := make(chan struct{})
+	var waiterResp Response
+	var waiterErr error
+	go func() {
+		waiterResp, waiterErr = op.Handle(&signalCtx{Context: context.Background(), done: waiterInWait}, Request{Payload: "synthetic payload", PayloadID: payloadID})
+		close(waiterDone)
+	}()
+	<-waiterInWait
+
+	close(release)
+	<-ownerDone
+	<-waiterDone
+
+	if got := calls.Load(); got != 1 {
+		t.Errorf("mask calls = %d, want 1", got)
+	}
+	if !errors.Is(ownerErr, ErrMaskingFailed) {
+		t.Errorf("owner error = %v, want ErrMaskingFailed", ownerErr)
+	}
+	if ownerResp.Result != "" {
+		t.Errorf("owner result = %q, want empty (fail closed)", ownerResp.Result)
+	}
+	if !errors.Is(waiterErr, ErrMaskingFailed) {
+		t.Errorf("waiter error = %v, want ErrMaskingFailed", waiterErr)
+	}
+	if waiterResp.Result != "" {
+		t.Errorf("waiter result = %q, want empty (fail closed)", waiterResp.Result)
+	}
+
+	rec, err := op.store.Get(payloadID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if rec.State != StateExpired {
+		t.Errorf("record State = %q, want %q", rec.State, StateExpired)
+	}
+	if rec.Result != "" {
+		t.Errorf("record Result = %q, want empty", rec.Result)
+	}
+}
+
+func TestBlockedMaskForOneIDDoesNotBlockAnother(t *testing.T) {
+	enteredBlocked := make(chan struct{})
+	release := make(chan struct{})
+	op := NewOperation(NewStore(), func(_ context.Context, p string) (string, error) {
+		if p == "blocked" {
+			close(enteredBlocked)
+			<-release
+		}
+		return "masked:" + p, nil
+	})
+
+	blockedDone := make(chan struct{})
+	go func() {
+		_, _ = op.Handle(context.Background(), Request{Payload: "blocked", PayloadID: "id-blocked"})
+		close(blockedDone)
+	}()
+
+	// Wait until id-blocked is actually inside its blocked masker before
+	// starting id-free, so the free id provably runs while the other is stuck.
+	<-enteredBlocked
+
+	// The blocked mask for id-blocked must not prevent id-free from completing.
+	done := make(chan struct{})
+	go func() {
+		resp, err := op.Handle(context.Background(), Request{Payload: "free", PayloadID: "id-free"})
+		if err != nil || resp.Result != "masked:free" {
+			t.Errorf("free Handle() = %q, %v", resp.Result, err)
+		}
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-blockedDone:
+		t.Fatal("blocked id finished before the free id")
+	}
+
+	close(release)
+	<-blockedDone
 }

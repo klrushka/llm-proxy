@@ -1,6 +1,7 @@
 package process
 
 import (
+	"context"
 	"errors"
 	"testing"
 )
@@ -234,5 +235,161 @@ func TestCanTransition(t *testing.T) {
 		if got := CanTransition(c.from, c.to); got != c.want {
 			t.Errorf("CanTransition(%q, %q) = %v, want %v", c.from, c.to, got, c.want)
 		}
+	}
+}
+
+func TestWaitReadyNotFound(t *testing.T) {
+	s := NewStore()
+	if _, err := s.WaitReady(context.Background(), "missing"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("WaitReady() error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestWaitReadyImmediateReady(t *testing.T) {
+	s := NewStore()
+	if _, err := s.CreateClaim("id-1", "synthetic original"); err != nil {
+		t.Fatalf("CreateClaim() error = %v", err)
+	}
+	if err := s.CompleteClaim("id-1", "masked result"); err != nil {
+		t.Fatalf("CompleteClaim() error = %v", err)
+	}
+	rec, err := s.WaitReady(context.Background(), "id-1")
+	if err != nil {
+		t.Fatalf("WaitReady() error = %v", err)
+	}
+	if rec.State != StateReady || rec.Result != "masked result" {
+		t.Errorf("WaitReady() = %+v, want ready with result", rec)
+	}
+}
+
+func TestWaitReadyImmediateExpired(t *testing.T) {
+	s := NewStore()
+	if _, err := s.CreateClaim("id-1", "synthetic original"); err != nil {
+		t.Fatalf("CreateClaim() error = %v", err)
+	}
+	if err := s.Transition("id-1", StateClaim, StateExpired); err != nil {
+		t.Fatalf("Transition(claim->expired) error = %v", err)
+	}
+	rec, err := s.WaitReady(context.Background(), "id-1")
+	if err != nil {
+		t.Fatalf("WaitReady() error = %v", err)
+	}
+	if rec.State != StateExpired {
+		t.Errorf("WaitReady() State = %q, want %q", rec.State, StateExpired)
+	}
+}
+
+func TestWaitReadyBlocksUntilCompleteClaim(t *testing.T) {
+	s := NewStore()
+	if _, err := s.CreateClaim("id-1", "synthetic original"); err != nil {
+		t.Fatalf("CreateClaim() error = %v", err)
+	}
+
+	started := make(chan struct{})
+	got := make(chan *Record, 1)
+	go func() {
+		close(started)
+		rec, err := s.WaitReady(context.Background(), "id-1")
+		if err != nil {
+			got <- nil
+			return
+		}
+		got <- rec
+	}()
+
+	<-started
+	select {
+	case <-got:
+		t.Fatal("WaitReady returned before the claim resolved")
+	default:
+	}
+
+	if err := s.CompleteClaim("id-1", "masked result"); err != nil {
+		t.Fatalf("CompleteClaim() error = %v", err)
+	}
+	rec := <-got
+	if rec == nil || rec.State != StateReady || rec.Result != "masked result" {
+		t.Errorf("WaitReady() = %+v, want ready with result", rec)
+	}
+}
+
+func TestWaitReadyBlocksUntilExpired(t *testing.T) {
+	s := NewStore()
+	if _, err := s.CreateClaim("id-1", "synthetic original"); err != nil {
+		t.Fatalf("CreateClaim() error = %v", err)
+	}
+
+	started := make(chan struct{})
+	got := make(chan *Record, 1)
+	go func() {
+		close(started)
+		rec, err := s.WaitReady(context.Background(), "id-1")
+		if err != nil {
+			got <- nil
+			return
+		}
+		got <- rec
+	}()
+
+	<-started
+	select {
+	case <-got:
+		t.Fatal("WaitReady returned before the claim resolved")
+	default:
+	}
+
+	if err := s.Transition("id-1", StateClaim, StateExpired); err != nil {
+		t.Fatalf("Transition(claim->expired) error = %v", err)
+	}
+	rec := <-got
+	if rec == nil || rec.State != StateExpired {
+		t.Errorf("WaitReady() = %+v, want expired", rec)
+	}
+}
+
+func TestWaitReadyContextCancellation(t *testing.T) {
+	s := NewStore()
+	if _, err := s.CreateClaim("id-1", "synthetic original"); err != nil {
+		t.Fatalf("CreateClaim() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	got := make(chan error, 1)
+	go func() {
+		close(started)
+		_, err := s.WaitReady(ctx, "id-1")
+		got <- err
+	}()
+
+	<-started
+	cancel()
+	if err := <-got; !errors.Is(err, context.Canceled) {
+		t.Errorf("WaitReady() error = %v, want context.Canceled", err)
+	}
+}
+
+func TestWaitReadySnapshotDetached(t *testing.T) {
+	s := NewStore()
+	if _, err := s.CreateClaim("id-1", "synthetic original"); err != nil {
+		t.Fatalf("CreateClaim() error = %v", err)
+	}
+	if err := s.CompleteClaim("id-1", "masked result"); err != nil {
+		t.Fatalf("CompleteClaim() error = %v", err)
+	}
+	rec, err := s.WaitReady(context.Background(), "id-1")
+	if err != nil {
+		t.Fatalf("WaitReady() error = %v", err)
+	}
+	rec.State = StateExpired
+	rec.Original = "mutated"
+	rec.Result = "mutated"
+
+	stored, err := s.Get("id-1")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if stored.State != StateReady || stored.Original != "synthetic original" || stored.Result != "masked result" {
+		t.Errorf("stored record changed by snapshot mutation: %+v", stored)
 	}
 }
