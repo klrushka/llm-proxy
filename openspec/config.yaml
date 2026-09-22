@@ -1,0 +1,17 @@
+schema: spec-driven
+
+context: |
+  Language: ru
+  All artifacts must be written in ru.
+  Keep OpenSpec structural headings and SHALL/MUST keywords in English.
+
+  Project: hackathon service for Russian PII detection, ownership classification, reversible tokenization, and detokenization after external LLM processing.
+  Main implementation language: Go 1.23+.
+  Go owns HTTP API, orchestration pipeline, regex rules, validators, model-result merging, contextual classification, person/organization ownership decisions, tokenization, token vault, audit logging, configuration, and tests.
+  Python is allowed only for a small model worker that loads ready-made Hugging Face models once at startup and returns spans, labels, confidence, and model source. Python must not tokenize, store mappings, access encryption keys, or decide whether data is personal.
+  Model worker models: redmadrobot-rnd/rubert-base-pii-ner as the primary detailed NER model and vladlinv/ru-pii-ner-gliner2.5 as an additional contextual detector. A fast mode may use only RuBERT and Go rules.
+  Fine-tuning is forbidden; use only ready-made models and deterministic rules.
+  Required data flow: detect candidates from Go rules and Python NER, merge spans deterministically, classify context, determine ownership, tokenize only confirmed personal data, store encrypted mappings by scope_id, detokenize by resolving existing tokens without rerunning NER.
+  Tokens must be short, opaque, type-bearing, cryptographically random, scoped by scope_id, reused for identical values inside one scope, and different across scopes. Persistent vault adapters must store ciphertext only; local demo may use an in-memory adapter.
+  Audit logs may include request_id, operation, detected types, entity counts, personal flags, sources, reason codes, duration, model mode, and result. Logs must never include source text, found values, restored text, mappings, CVV/PIN values, ciphertext, encryption keys, authorization headers, or request/response bodies on errors.
+  Git workflow: one commit equals one implementation task from tasks.md. Do not batch unrelated tasks into one commit.
