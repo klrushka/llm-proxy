@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/klrushka/llm-proxy/internal/audit"
 	"github.com/klrushka/llm-proxy/internal/metrics"
 )
 
@@ -19,9 +20,10 @@ type ReadyFunc func() error
 type Option func(*options)
 
 type options struct {
-	pii     PIIHandlers
-	process ProcessFunc
-	metrics *metrics.Registry
+	pii          PIIHandlers
+	process      ProcessFunc
+	metrics      *metrics.Registry
+	processAudit *audit.Logger
 }
 
 // WithPIIHandlers wires the extended /v1/pii/* operations into the router.
@@ -58,7 +60,7 @@ func NewRouter(ready ReadyFunc, metricsHandler http.Handler, opts ...Option) *ht
 		mux.Handle("GET /metrics", handleMetrics(metricsHandler))
 	}
 	registerPIIRoutes(mux, o.pii)
-	registerProcessRoute(mux, o.process, o.metrics)
+	registerProcessRoute(mux, o.process, o.metrics, o.processAudit)
 	return mux
 }
 

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/klrushka/llm-proxy/internal/audit"
 	"github.com/klrushka/llm-proxy/internal/metrics"
 	"github.com/klrushka/llm-proxy/internal/process"
 )
@@ -24,14 +25,50 @@ func WithProcess(fn ProcessFunc) Option {
 	return func(o *options) { o.process = fn }
 }
 
+// WithProcessAudit wires an audit.Logger into the POST /process operation.
+// Each request emits one safe structured audit event carrying only
+// operation-level metadata (operation, result, duration) and no plaintext,
+// request body, Authorization, dependency error detail, token, ciphertext,
+// key, CVV or PIN. It is the audit/logging seam for the process path; a nil
+// logger leaves the operation un-audited.
+func WithProcessAudit(logger *audit.Logger) Option {
+	return func(o *options) { o.processAudit = logger }
+}
+
 // registerProcessRoute registers the POST /process route on mux. When reg is
 // non-nil the operation is wrapped to record safe latency and token-count
-// aggregates for the metrics endpoint.
-func registerProcessRoute(mux *http.ServeMux, fn ProcessFunc, reg *metrics.Registry) {
+// aggregates for the metrics endpoint. When logger is non-nil the operation is
+// wrapped to emit one safe structured audit event per request.
+func registerProcessRoute(mux *http.ServeMux, fn ProcessFunc, reg *metrics.Registry, logger *audit.Logger) {
 	if reg != nil && fn != nil {
 		fn = recordProcess(reg, fn)
 	}
+	if logger != nil && fn != nil {
+		fn = auditProcess(logger, fn)
+	}
 	mux.HandleFunc("POST /process", handleProcess(fn))
+}
+
+// auditProcess wraps fn to emit one safe structured audit event per request.
+// The event carries only the operation name, the outcome and the duration; it
+// never carries the payload, the result, a token value, a dependency error
+// message or any other plaintext. The process adapter does not track entity
+// metadata, so the event carries no entities.
+func auditProcess(logger *audit.Logger, fn ProcessFunc) ProcessFunc {
+	return func(ctx context.Context, req process.Request) (process.Response, error) {
+		start := time.Now()
+		resp, err := fn(ctx, req)
+		result := audit.ResultSuccess
+		if err != nil {
+			result = audit.ResultError
+		}
+		_ = logger.Log(audit.Event{
+			Operation: audit.OpProcess,
+			Duration:  time.Since(start),
+			Result:    result,
+		})
+		return resp, err
+	}
 }
 
 // recordProcess wraps fn to record one safe observation per request. It

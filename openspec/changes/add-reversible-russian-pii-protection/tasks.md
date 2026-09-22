@@ -111,7 +111,7 @@
 
 - [x] 12.1 Добавить integration tests для extended `/v1/pii/*` API; observable check: `go test ./...` проходит.
 - [x] 12.2 Добавить integration tests для `/process` state/idempotency/concurrency/errors; observable check: `go test ./...` проходит.
-- [ ] 12.3 Добавить integration tests для degradation/overload/no-plaintext leakage; observable check: `go test ./...` проходит.
+- [x] 12.3 Добавить integration tests для degradation/overload/no-plaintext leakage; observable check: `go test ./...` проходит.
 - [ ] 12.4 Добавить E2E demo mask -> external processing preserving tokens -> restore; observable check: automated E2E command проходит.
 - [ ] 12.5 Добавить Dockerfile и docker-compose для Go service и Python worker; observable check: `docker compose config` проходит и startup документирован.
 - [ ] 12.6 Добавить README с запуском Go-сервиса, Python worker-а, fast mode, конфигом vault, demo round trip и инструкцией настройки consumer policy не более пяти предложений; observable check: команды из README проверены вручную или smoke script.
