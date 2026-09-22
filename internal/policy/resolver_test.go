@@ -201,6 +201,66 @@ func TestResolveResultTypesMapIsIsolated(t *testing.T) {
 	}
 }
 
+func TestResolvePerSystemTypeSettings(t *testing.T) {
+	def := NewPolicy(DefaultConsumerID, []string{"EMAIL"})
+	consumerA := NewPolicy("consumer-a", []string{"PHONE"})
+	r := NewResolver(def, map[string]Policy{"consumer-a": consumerA})
+
+	blank, err := r.Resolve("")
+	if err != nil {
+		t.Fatalf("Resolve(\"\") error = %v, want nil", err)
+	}
+	if !blank.AllowsType("EMAIL") || blank.AllowsType("PHONE") {
+		t.Errorf("blank policy matrix = EMAIL:%v PHONE:%v, want EMAIL:true PHONE:false",
+			blank.AllowsType("EMAIL"), blank.AllowsType("PHONE"))
+	}
+
+	consumer, err := r.Resolve("consumer-a")
+	if err != nil {
+		t.Fatalf("Resolve(\"consumer-a\") error = %v, want nil", err)
+	}
+	if consumer.AllowsType("EMAIL") || !consumer.AllowsType("PHONE") {
+		t.Errorf("consumer-a matrix = EMAIL:%v PHONE:%v, want EMAIL:false PHONE:true",
+			consumer.AllowsType("EMAIL"), consumer.AllowsType("PHONE"))
+	}
+
+	if blank.AllowsType("EMAIL") == consumer.AllowsType("EMAIL") {
+		t.Error("same canonical EMAIL type must be allowed for one system and excluded for the other")
+	}
+
+	delete(blank.types, "EMAIL")
+	blank.types["PHONE"] = struct{}{}
+	delete(consumer.types, "PHONE")
+	consumer.types["EMAIL"] = struct{}{}
+
+	blank2, err := r.Resolve("")
+	if err != nil {
+		t.Fatalf("Resolve(\"\") after mutation error = %v", err)
+	}
+	if !blank2.AllowsType("EMAIL") || blank2.AllowsType("PHONE") {
+		t.Error("blank policy settings changed after mutating earlier result")
+	}
+
+	consumer2, err := r.Resolve("consumer-a")
+	if err != nil {
+		t.Fatalf("Resolve(\"consumer-a\") after mutation error = %v", err)
+	}
+	if consumer2.AllowsType("EMAIL") || !consumer2.AllowsType("PHONE") {
+		t.Error("consumer-a policy settings changed after mutating earlier result")
+	}
+
+	unknown, err := r.Resolve("unknown-consumer")
+	if err != ErrUnknownConsumer {
+		t.Fatalf("Resolve error = %v, want exact bare ErrUnknownConsumer", err)
+	}
+	if !reflect.DeepEqual(unknown, Policy{}) {
+		t.Errorf("Resolve returned non-zero Policy %+v, want zero", unknown)
+	}
+	if unknown.AllowsType("EMAIL") || unknown.AllowsType("PHONE") {
+		t.Error("unknown consumer must fail closed for both EMAIL and PHONE")
+	}
+}
+
 func TestResolveConcurrentReadsSafe(t *testing.T) {
 	def := NewPolicy(DefaultConsumerID, []string{"EMAIL"})
 	r := NewResolver(def, map[string]Policy{
