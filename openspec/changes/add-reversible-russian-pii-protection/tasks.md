@@ -55,7 +55,7 @@
 ## 4. Python model worker (WS-B)
 
 - [x] 4.1 Создать `python/model_worker` с загрузкой `redmadrobot-rnd/rubert-base-pii-ner` и `vladlinv/ru-pii-ner-gliner2.5` один раз при старте; observable check: smoke test worker health/inference проходит.
-- [ ] 4.2 Ограничить worker ответом spans/labels/confidence/model source без tokenization, mappings и ключей; observable check: contract test JSON schema проходит.
+- [x] 4.2 Ограничить worker ответом spans/labels/confidence/model source без tokenization, mappings и ключей; observable check: contract test JSON schema проходит.
 
 ## 5. Go model client и rules/validators (WS-B)
 
