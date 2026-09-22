@@ -72,7 +72,7 @@
 ## 6. Merge, context classification и ownership (WS-B)
 
 - [x] 6.1 Реализовать deterministic merge: exact duplicates, source preservation, overlap priority, component metadata, no nested/repeated tokens; observable check: merge unit tests проходят.
-- [ ] 6.2 Реализовать contextual classification DATE/LOCATION в `BIRTH_DATE`, `PASSPORT_ISSUE_DATE`, `BIRTH_PLACE`, `ADDRESS`; observable check: scenario tests проходят.
+- [x] 6.2 Реализовать contextual classification DATE/LOCATION в `BIRTH_DATE`, `PASSPORT_ISSUE_DATE`, `BIRTH_PLACE`, `ADDRESS`; observable check: scenario tests проходят.
 - [ ] 6.3 Реализовать ownership scoring с positive/negative context, shared `owner_id`, organization context и `review_recommended`; observable check: hard negatives tests проходят.
 
 ## 7. Tokenization и vault (WS-C)
