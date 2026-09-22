@@ -1,6 +1,7 @@
 package testcorpus
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -215,5 +216,53 @@ func TestFixtureIsSynthetic(t *testing.T) {
 		if strings.Contains(tc.Input, "Иванов Иван Иванович") && tc.ID != "positive-full-name-email" {
 			t.Errorf("case %q reuses synthetic name outside its fixture", tc.ID)
 		}
+	}
+}
+
+func writeCorpus(t *testing.T, content string) string {
+	t.Helper()
+	dir := t.TempDir()
+	schemaBytes, err := os.ReadFile(filepath.Join(filepath.Dir(corpusPath), "pii-corpus.schema.json"))
+	if err != nil {
+		t.Fatalf("ReadFile(schema) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "pii-corpus.schema.json"), schemaBytes, 0o600); err != nil {
+		t.Fatalf("WriteFile(schema) error = %v", err)
+	}
+	path := filepath.Join(dir, "corpus.json")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	return path
+}
+
+func TestLoadEnforcesSchemaOnRealFixture(t *testing.T) {
+	c, err := Load(corpusPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if len(c.Cases) != 3 {
+		t.Fatalf("len(cases) = %d, want 3", len(c.Cases))
+	}
+}
+
+func TestLoadRejectsMissingRequiredCases(t *testing.T) {
+	path := writeCorpus(t, `{"version":"1","offset_unit":"utf8_byte"}`)
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load() expected error for missing required cases")
+	}
+}
+
+func TestLoadRejectsUnexpectedAdditionalProperty(t *testing.T) {
+	path := writeCorpus(t, `{"version":"1","offset_unit":"utf8_byte","cases":[],"extra":"nope"}`)
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load() expected error for unexpected additional property")
+	}
+}
+
+func TestLoadRejectsMissingRequiredCaseFields(t *testing.T) {
+	path := writeCorpus(t, `{"version":"1","offset_unit":"utf8_byte","cases":[{"id":"a"}]}`)
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load() expected error for case missing required fields")
 	}
 }

@@ -4,10 +4,14 @@
 package testcorpus
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
+
+	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
 // OffsetUnit is the fixed offset unit for all spans.
@@ -40,10 +44,14 @@ type Span struct {
 	MaskToken string `json:"mask_token,omitempty"`
 }
 
-// Load reads and parses a corpus file.
+// Load reads and parses a corpus file, enforcing the sibling JSON Schema
+// (pii-corpus.schema.json) against the raw document before unmarshalling.
 func Load(path string) (Corpus, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
+		return Corpus{}, err
+	}
+	if err := validateSchema(filepath.Join(filepath.Dir(path), "pii-corpus.schema.json"), data); err != nil {
 		return Corpus{}, err
 	}
 	var c Corpus
@@ -51,6 +59,47 @@ func Load(path string) (Corpus, error) {
 		return Corpus{}, err
 	}
 	return c, nil
+}
+
+// validateSchema compiles the JSON Schema at schemaPath and validates the raw
+// corpus document against it.
+func validateSchema(schemaPath string, data []byte) error {
+	schemaBytes, err := os.ReadFile(schemaPath)
+	if err != nil {
+		return fmt.Errorf("read schema: %w", err)
+	}
+	schemaDoc, err := decodeJSON(schemaBytes)
+	if err != nil {
+		return fmt.Errorf("decode schema: %w", err)
+	}
+	compiler := jsonschema.NewCompiler()
+	if err := compiler.AddResource("pii-corpus.schema.json", schemaDoc); err != nil {
+		return fmt.Errorf("compile schema: %w", err)
+	}
+	schema, err := compiler.Compile("pii-corpus.schema.json")
+	if err != nil {
+		return fmt.Errorf("compile schema: %w", err)
+	}
+	doc, err := decodeJSON(data)
+	if err != nil {
+		return fmt.Errorf("decode corpus: %w", err)
+	}
+	if err := schema.Validate(doc); err != nil {
+		return fmt.Errorf("schema validation failed: %w", err)
+	}
+	return nil
+}
+
+// decodeJSON decodes raw JSON into a generic value, preserving number types so
+// that integer constraints in the schema are evaluated correctly.
+func decodeJSON(data []byte) (any, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return nil, err
+	}
+	return v, nil
 }
 
 // Validate checks the structural and offset consistency of a corpus.
