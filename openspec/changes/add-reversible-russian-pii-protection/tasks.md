@@ -66,7 +66,7 @@
 - [x] 5.5 Реализовать regex candidates и checksum для INN (person/organization); observable check: positive/negative unit tests проходят.
 - [x] 5.6 Реализовать regex candidates и Luhn для bank card; observable check: positive/negative unit tests проходят.
 - [x] 5.7 Реализовать regex candidates для dates, включая текстовые даты; observable check: table tests с synthetic fixtures проходят.
-- [ ] 5.8 Реализовать regex candidates для address и postal code; observable check: table tests с synthetic fixtures проходят.
+- [x] 5.8 Реализовать regex candidates для address и postal code; observable check: table tests с synthetic fixtures проходят.
 - [ ] 5.9 Реализовать regex candidates и context validators для CVV/PIN/cardholder; observable check: positive/negative unit tests проходят.
 
 ## 6. Merge, context classification и ownership (WS-B)
