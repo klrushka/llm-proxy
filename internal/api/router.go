@@ -17,7 +17,8 @@ type ReadyFunc func() error
 type Option func(*options)
 
 type options struct {
-	pii PIIHandlers
+	pii     PIIHandlers
+	process ProcessFunc
 }
 
 // WithPIIHandlers wires the extended /v1/pii/* operations into the router.
@@ -42,6 +43,7 @@ func NewRouter(ready ReadyFunc, metrics http.Handler, opts ...Option) *http.Serv
 	mux.HandleFunc("GET /health/ready", handleReady(ready))
 	mux.Handle("GET /metrics", handleMetrics(metrics))
 	registerPIIRoutes(mux, o.pii)
+	registerProcessRoute(mux, o.process)
 	return mux
 }
 
