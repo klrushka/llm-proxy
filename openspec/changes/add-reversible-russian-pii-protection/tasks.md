@@ -78,7 +78,7 @@
 ## 7. Tokenization и vault (WS-C)
 
 - [x] 7.1 Реализовать cryptographically random scoped tokens `<PII_TYPE_SUFFIX>` с reuse внутри scope и различием между scopes; observable check: unit tests repeated/scope separation проходят.
-- [ ] 7.2 Реализовать replacement справа налево по offsets только для `personal=true`; observable check: tokenization tests на отсутствие nested/repeated tokens проходят.
+- [x] 7.2 Реализовать replacement справа налево по offsets только для `personal=true`; observable check: tokenization tests на отсутствие nested/repeated tokens проходят.
 - [ ] 7.3 Реализовать vault interface и in-memory demo adapter; observable check: vault interface unit tests проходят.
 - [ ] 7.4 Реализовать TTL и revoke scope; observable check: vault unit tests для expiry/revoke/cross-scope denial проходят.
 - [ ] 7.5 Реализовать detokenize strict/preserve без NER; observable check: round trip, unknown token strict error и preserve unresolved tokens проходят.
