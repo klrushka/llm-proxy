@@ -1,8 +1,8 @@
 // Package policy defines consumer policy types for the /process adapter.
 // It covers the benchmark/default consumer, per-consumer allowed PII type
-// names, demasking and rules-only degraded mode. Transport identity
-// resolution, config file format, auth and the canonical PII registry are
-// out of scope here.
+// names, demasking and rules-only degraded mode, and transport-resolved
+// identity mapping. Transport authentication/trust establishment, config file
+// format, auth and the canonical PII registry are out of scope here.
 package policy
 
 // DefaultConsumerID is the stable identifier of the benchmark/default
@@ -54,4 +54,15 @@ func (p Policy) Types() []string {
 		out = append(out, name)
 	}
 	return out
+}
+
+// clone returns a deep copy of p. The private types map is cloned so later
+// mutation of the copy cannot affect the original.
+func (p Policy) clone() Policy {
+	types := make(map[string]struct{}, len(p.types))
+	for name := range p.types {
+		types[name] = struct{}{}
+	}
+	p.types = types
+	return p
 }

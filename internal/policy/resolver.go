@@ -1,0 +1,54 @@
+package policy
+
+import (
+	"errors"
+	"strings"
+)
+
+// ErrUnknownConsumer is returned when a non-empty identity is not registered.
+// It is a safe sentinel that never carries the supplied identity.
+var ErrUnknownConsumer = errors.New("policy: unknown consumer")
+
+// Resolver maps a trusted transport-resolved identity to a Policy. It never
+// reads HTTP headers or knows about net/http; the identity is already resolved
+// by a trusted transport layer before being passed to Resolve. A blank or
+// whitespace-only identity resolves to the preconfigured benchmark/default
+// consumer. A non-empty unknown identity fails closed with ErrUnknownConsumer.
+type Resolver struct {
+	defaultPolicy Policy
+	byID          map[string]Policy
+}
+
+// NewResolver builds a Resolver. defaultPolicy is used for blank identities
+// and for the explicit DefaultConsumerID. entries maps identity to policy.
+// Both defaultPolicy and every entry are deep-copied, so later caller mutation
+// cannot affect the resolver. The resolver is immutable after construction and
+// safe for concurrent reads.
+func NewResolver(defaultPolicy Policy, entries map[string]Policy) *Resolver {
+	r := &Resolver{
+		defaultPolicy: defaultPolicy.clone(),
+		byID:          make(map[string]Policy, len(entries)),
+	}
+	for id, p := range entries {
+		r.byID[id] = p.clone()
+	}
+	return r
+}
+
+// Resolve returns the policy for identity. A blank or whitespace-only identity
+// returns a deep copy of the default policy with nil error. identity equal to
+// DefaultConsumerID also returns the default policy regardless of any entry.
+// A registered non-empty identity returns a deep copy of its policy. An
+// unknown non-empty identity returns the zero Policy and the exact bare
+// ErrUnknownConsumer. The returned Policy is a deep copy, so caller mutation
+// of exported capability fields cannot affect future resolutions.
+func (r *Resolver) Resolve(identity string) (Policy, error) {
+	if strings.TrimSpace(identity) == "" || identity == DefaultConsumerID {
+		return r.defaultPolicy.clone(), nil
+	}
+	p, ok := r.byID[identity]
+	if !ok {
+		return Policy{}, ErrUnknownConsumer
+	}
+	return p.clone(), nil
+}
