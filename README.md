@@ -114,6 +114,47 @@ curl -s -X POST http://localhost:8080/process \
 # ожидается исходный синтетический текст
 ```
 
+## Load benchmark через `cmd/pii-load`
+
+`cmd/pii-load` — небольшой стандартный Go-бенчмарк для `POST /process`. Он
+прогревает ограниченный пул синтетических записей `payload_id/original/mask`,
+затем в течение заданного времени гонит детерминированную смесь mask/restore
+запросов с теми же id как open-loop целевую нагрузку (bounded concurrency и
+явный per-request timeout; медленные ответы не превращают тест в closed-loop).
+Целевая нагрузка выводится из RPS и duration как явное число planned-слотов,
+каждый слот планируется по своей метке времени; если слот не может стартовать
+из-за занятого concurrency-слота, он учитывается как `unschedulable`, а не
+теряется. Печатает machine-readable JSON-отчёт: requested/achieved RPS,
+duration, planned/scheduled/completed, errors, unschedulable, p50/p95/p99,
+целевой latency и факт его достижения. Только синтетика, реальных ПДн нет.
+
+Целевой latency ≤ 1s — это целевой ориентир из Appendix, а не жёсткое правило
+официального checker-а. Команда возвращает ненулевой код при ошибках запроса,
+контракта, round trip, невозможности распланировать/выполнить нагрузку
+(`unschedulable > 0`) или отмене прогона.
+
+Smoke-проверка (короткий прогон против локального fast-mode сервиса):
+
+```sh
+go run ./cmd/pii-load -base-url http://127.0.0.1:8080 \
+  -rps 50 -duration 2s -pool 8 -concurrency 16 -timeout 2s
+```
+
+Канонический прогон 1000 RPS / 5 минут (против отдельно запущенного
+fast-mode сервиса):
+
+```sh
+go run ./cmd/pii-load -base-url http://127.0.0.1:8080 \
+  -rps 1000 -duration 5m -pool 1000 -concurrency 200 -timeout 10s
+```
+
+Флаги: `-base-url`, `-rps`, `-duration`, `-pool`, `-concurrency`, `-timeout`,
+`-target-latency`.
+
+Зафиксированный результат одного канонического прогона 1000 RPS / 5 минут
+(локальный loopback, fast mode) с raw JSON-отчётом и расшифровкой latency —
+в [docs/load-benchmark-verified-run.md](docs/load-benchmark-verified-run.md).
+
 ## Расширенный API /v1/pii/*
 
 - `POST /v1/pii/detect` — обнаружение без значений: `text`,
