@@ -61,11 +61,12 @@ type Entity struct {
 	Model      string
 }
 
-// Client calls the model worker's POST /infer endpoint.
+// Client calls the model worker's POST /infer and POST /count_tokens endpoints.
 type Client struct {
-	endpoint string
-	mode     Mode
-	http     *http.Client
+	endpoint      string
+	countEndpoint string
+	mode          Mode
+	http          *http.Client
 }
 
 // New validates its inputs and returns a Client. It rejects an unknown mode,
@@ -96,10 +97,15 @@ func New(baseURL string, mode Mode, timeout time.Duration) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("modelclient: resolve inference endpoint: %w", err)
 	}
+	countEndpoint, err := url.JoinPath(u.String(), "count_tokens")
+	if err != nil {
+		return nil, fmt.Errorf("modelclient: resolve count endpoint: %w", err)
+	}
 	return &Client{
-		endpoint: endpoint,
-		mode:     mode,
-		http:     &http.Client{Timeout: timeout},
+		endpoint:      endpoint,
+		countEndpoint: countEndpoint,
+		mode:          mode,
+		http:          &http.Client{Timeout: timeout},
 	}, nil
 }
 

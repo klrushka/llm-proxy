@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://llm-proxy.local/model_worker/count_tokens_response.schema.json",
+  "title": "Model worker POST /count_tokens success response",
+  "description": "Contract for the Python model worker token count response. Carries the exact primary model id and a non-negative integer token count produced by that model's tokenizer. No source text, tokenization artifacts, reversible mappings, or keys.",
+  "type": "object",
+  "required": ["model", "count"],
+  "additionalProperties": false,
+  "properties": {
+    "model": {
+      "type": "string",
+      "const": "redmadrobot-rnd/rubert-base-pii-ner"
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

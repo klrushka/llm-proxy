@@ -12,7 +12,7 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
 
-from backends import Backend, GLiNERBackend, RuBERTBackend
+from backends import RUBERT_MODEL_ID, Backend, GLiNERBackend, RuBERTBackend
 
 REQUIRED_MODELS = ("rubert", "gliner")
 
@@ -40,6 +40,14 @@ class Worker:
                     }
                 )
         return entities
+
+    def count_tokens(self, text: str) -> int:
+        """Count tokens with the RuBERT tokenizer only.
+
+        The count path is bound specifically to the RuBERT backend identifier;
+        GLiNER is never consulted for token counts.
+        """
+        return self._backends["rubert"].count_tokens(text)
 
 
 def build_worker(
@@ -79,19 +87,34 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_json(200, {"status": "ok", "models": self.worker.models()})
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path != "/infer":
-            self._send_json(*_json_error(404, "not found"))
+        if self.path == "/infer":
+            self._handle_infer()
             return
+        if self.path == "/count_tokens":
+            self._handle_count_tokens()
+            return
+        self._send_json(*_json_error(404, "not found"))
+
+    def _read_text(self) -> tuple[str | None, tuple[int, dict] | None]:
         try:
             length = int(self.headers.get("Content-Length", "0"))
             body = self.rfile.read(length)
             payload = json.loads(body)
         except (ValueError, json.JSONDecodeError):
-            self._send_json(*_json_error(400, "invalid request"))
-            return
-        text = payload.get("text")
+            return None, (400, {"error": "invalid request"})
+        if not isinstance(payload, dict):
+            return None, (400, {"error": "invalid request"})
+        if set(payload.keys()) != {"text"}:
+            return None, (400, {"error": "invalid request"})
+        text = payload["text"]
         if not isinstance(text, str):
-            self._send_json(*_json_error(400, "text must be a string"))
+            return None, (400, {"error": "text must be a string"})
+        return text, None
+
+    def _handle_infer(self) -> None:
+        text, err = self._read_text()
+        if err is not None:
+            self._send_json(*err)
             return
         try:
             entities = self.worker.infer(text)
@@ -99,6 +122,21 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(*_json_error(500, "inference failed"))
             return
         self._send_json(200, {"entities": entities})
+
+    def _handle_count_tokens(self) -> None:
+        text, err = self._read_text()
+        if err is not None:
+            self._send_json(*err)
+            return
+        try:
+            count = self.worker.count_tokens(text)
+        except Exception:
+            self._send_json(*_json_error(500, "token count failed"))
+            return
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            self._send_json(*_json_error(500, "token count failed"))
+            return
+        self._send_json(200, {"model": RUBERT_MODEL_ID, "count": count})
 
     def _send_json(self, status: int, payload: dict) -> None:
         data = json.dumps(payload).encode("utf-8")

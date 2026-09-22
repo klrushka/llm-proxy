@@ -10,6 +10,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+# Canonical primary model for token counting. The token-count contract is bound
+# to this exact model id; it is used both when building the pipeline and when
+# reporting the model in the /count_tokens response.
+RUBERT_MODEL_ID = "redmadrobot-rnd/rubert-base-pii-ner"
+
 
 @dataclass(frozen=True)
 class Entity:
@@ -41,7 +46,7 @@ class RuBERTBackend:
 
         self._pipe = pipeline(
             "token-classification",
-            model="redmadrobot-rnd/rubert-base-pii-ner",
+            model=RUBERT_MODEL_ID,
             aggregation_strategy="simple",
         )
 
@@ -59,6 +64,18 @@ class RuBERTBackend:
                 )
             )
         return entities
+
+    def count_tokens(self, text: str) -> int:
+        """Count tokens with the already-loaded RuBERT tokenizer.
+
+        Reuses the tokenizer owned by the loaded pipeline; no second model or
+        tokenizer instance is created. ``add_special_tokens=False`` and no
+        truncation so the count reflects the raw input length. The count is
+        bound to the model tokenizer, never to characters or words.
+        """
+        tokenizer = self._pipe.tokenizer
+        ids = tokenizer(text, add_special_tokens=False, truncation=False)["input_ids"]
+        return len(ids)
 
 
 # Canonical GLiNER label set from the model card. Not invented; passed as input.
