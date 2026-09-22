@@ -93,8 +93,11 @@ func (o *Operation) handleFirst(ctx context.Context, req Request) (Response, err
 		// observe the same classification. Expire the claim safely and wake
 		// waiters exactly once.
 		failErr := ErrMaskingFailed
-		if errors.Is(err, ErrVaultUnavailable) {
+		switch {
+		case errors.Is(err, ErrVaultUnavailable):
 			failErr = ErrVaultUnavailable
+		case errors.Is(err, ErrModelUnavailable):
+			failErr = ErrModelUnavailable
 		}
 		if expireErr := o.store.expireClaim(req.PayloadID, failErr); expireErr != nil {
 			// The claim could not be safely expired; fail closed with an empty

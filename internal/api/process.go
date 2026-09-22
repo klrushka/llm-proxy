@@ -64,6 +64,12 @@ func handleProcess(fn ProcessFunc) http.HandlerFunc {
 				writeJSONError(w, http.StatusServiceUnavailable, "vault unavailable")
 				return
 			}
+			if errors.Is(err, process.ErrModelUnavailable) {
+				// Safe fail-closed: generic body, no result/payload/internal
+				// detail, and no Retry-After (distinct from overload).
+				writeJSONError(w, http.StatusServiceUnavailable, "model worker unavailable")
+				return
+			}
 			writeJSONError(w, http.StatusInternalServerError, "process failed")
 			return
 		}

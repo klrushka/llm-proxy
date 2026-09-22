@@ -245,6 +245,92 @@ func TestOperationVaultUnavailableLaterRetryObservesSame(t *testing.T) {
 	}
 }
 
+func TestOperationModelUnavailableOwnerWaiterRetryShareClassification(t *testing.T) {
+	const payload = "synthetic text"
+	const payloadID = "id-1"
+	var calls atomic.Int64
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	composed := WithRulesOnlyFallback(false,
+		func(_ context.Context, p string) (string, error) {
+			calls.Add(1)
+			close(entered)
+			<-release
+			return "", fmt.Errorf("worker down: %w", ErrModelUnavailable)
+		},
+		func(_ context.Context, _ string) (string, error) {
+			return "rules", nil
+		})
+	op := NewOperation(NewStore(), composed)
+
+	ownerDone := make(chan struct{})
+	var ownerResp Response
+	var ownerErr error
+	go func() {
+		ownerResp, ownerErr = op.Handle(context.Background(), Request{Payload: payload, PayloadID: payloadID})
+		close(ownerDone)
+	}()
+	<-entered
+
+	waiterInWait := make(chan struct{})
+	waiterDone := make(chan struct{})
+	var waiterResp Response
+	var waiterErr error
+	go func() {
+		waiterResp, waiterErr = op.Handle(&signalCtx{Context: context.Background(), done: waiterInWait}, Request{Payload: payload, PayloadID: payloadID})
+		close(waiterDone)
+	}()
+	<-waiterInWait
+
+	close(release)
+	<-ownerDone
+	<-waiterDone
+
+	if got := calls.Load(); got != 1 {
+		t.Errorf("composed mask calls = %d, want 1", got)
+	}
+	if !errors.Is(ownerErr, ErrModelUnavailable) {
+		t.Errorf("owner error = %v, want ErrModelUnavailable", ownerErr)
+	}
+	if ownerErr != ErrModelUnavailable {
+		t.Errorf("owner error = %v, want exact bare sentinel", ownerErr)
+	}
+	if ownerResp.Result != "" {
+		t.Errorf("owner result = %q, want empty (fail closed)", ownerResp.Result)
+	}
+	if !errors.Is(waiterErr, ErrModelUnavailable) {
+		t.Errorf("waiter error = %v, want ErrModelUnavailable", waiterErr)
+	}
+	if waiterErr != ErrModelUnavailable {
+		t.Errorf("waiter error = %v, want exact bare sentinel", waiterErr)
+	}
+	if waiterResp.Result != "" {
+		t.Errorf("waiter result = %q, want empty (fail closed)", waiterResp.Result)
+	}
+
+	rec, err := op.store.Get(payloadID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if rec.State != StateExpired {
+		t.Errorf("record State = %q, want %q", rec.State, StateExpired)
+	}
+	if rec.Result != "" {
+		t.Errorf("record Result = %q, want empty", rec.Result)
+	}
+
+	retry, err := op.Handle(context.Background(), Request{Payload: payload, PayloadID: payloadID})
+	if !errors.Is(err, ErrModelUnavailable) {
+		t.Errorf("retry error = %v, want ErrModelUnavailable", err)
+	}
+	if retry.Result != "" {
+		t.Errorf("retry result = %q, want empty", retry.Result)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("composed mask calls after retry = %d, want 1 (no re-masking)", got)
+	}
+}
+
 func TestOperationGenericMaskingErrorOwnerAndWaiterStayMaskingFailed(t *testing.T) {
 	const payloadID = "id-1"
 	var calls atomic.Int64

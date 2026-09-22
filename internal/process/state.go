@@ -190,9 +190,9 @@ func (s *Store) Transition(payloadID string, from, to RecordState) error {
 // record, transitions it to expired, and wakes any waiters exactly once. It
 // returns ErrNotFound if no record exists and ErrInvalidTransition if the
 // record is not in claim state. The stored value is always exactly
-// ErrVaultUnavailable or exactly ErrMaskingFailed, never the caller-provided
-// error object, so raw dependency errors and their messages are never
-// retained.
+// ErrVaultUnavailable, exactly ErrModelUnavailable or exactly
+// ErrMaskingFailed, never the caller-provided error object, so raw dependency
+// errors and their messages are never retained.
 func (s *Store) expireClaim(payloadID string, failErr error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -203,9 +203,12 @@ func (s *Store) expireClaim(payloadID string, failErr error) error {
 	if e.rec.State != StateClaim {
 		return ErrInvalidTransition
 	}
-	if errors.Is(failErr, ErrVaultUnavailable) {
+	switch {
+	case errors.Is(failErr, ErrVaultUnavailable):
 		e.failErr = ErrVaultUnavailable
-	} else {
+	case errors.Is(failErr, ErrModelUnavailable):
+		e.failErr = ErrModelUnavailable
+	default:
 		e.failErr = ErrMaskingFailed
 	}
 	e.rec.State = StateExpired
