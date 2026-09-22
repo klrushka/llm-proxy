@@ -95,7 +95,7 @@
 - [x] 9.2 Запретить возврат tokenized text при ошибке сохранения mapping в vault; observable check: failure injection test проходит.
 - [x] 9.3 Проверить, что ошибки не логируют request/response body, Authorization, ciphertext, keys, CVV/PIN; observable check: security unit tests проходят.
 - [x] 9.4 Реализовать воспроизводимый Gitleaks gate: локальная команда и CI, сканирование Git history и текущих файлов, redacted output, без baseline для чистого нового репозитория; observable check: оба режима завершаются без findings.
-- [ ] 9.5 Реализовать минимальный Semgrep CE SAST gate: без cloud token, explicit ruleset (не `--config auto`), metrics off, blocking только ERROR; локальная команда и CI; observable check: scan текущего Go/Python source проходит.
+- [x] 9.5 Реализовать минимальный Semgrep CE SAST gate: без cloud token, explicit ruleset (не `--config auto`), metrics off, blocking только ERROR; локальная команда и CI; observable check: scan текущего Go/Python source проходит.
 
 ## 10. Метрики и quality tooling (WS-D)
 

@@ -1,0 +1,64 @@
+rules:
+  - id: go-shell-command-injection
+    languages:
+      - go
+    severity: ERROR
+    message: >-
+      Shell execution via exec.Command with a shell interpreter and -c is a
+      command-injection trust boundary. Prefer passing arguments directly to
+      the target binary instead of building a shell command string.
+    metadata:
+      cwe:
+        - "CWE-78: Improper Neutralization of Special Elements used in an OS Command"
+      confidence: HIGH
+    pattern-either:
+      - pattern: 'exec.Command("sh", "-c", $CMD, $...ARGS)'
+      - pattern: 'exec.Command("bash", "-c", $CMD, $...ARGS)'
+
+  - id: go-insecure-tls
+    languages:
+      - go
+    severity: ERROR
+    message: >-
+      tls.Config with InsecureSkipVerify: true disables TLS certificate
+      verification and breaks the trust boundary. Never disable verification
+      in production code.
+    metadata:
+      cwe:
+        - "CWE-295: Improper Certificate Validation"
+      confidence: HIGH
+    pattern: 'tls.Config{$...FIELDS, InsecureSkipVerify: true}'
+
+  - id: python-subprocess-shell
+    languages:
+      - python
+    severity: ERROR
+    message: >-
+      subprocess invocation with shell=True executes a shell and is a
+      command-injection trust boundary. Pass a list of arguments without a
+      shell instead.
+    metadata:
+      cwe:
+        - "CWE-78: Improper Neutralization of Special Elements used in an OS Command"
+      confidence: HIGH
+    pattern-either:
+      - pattern: 'subprocess.call($ARGS, shell=True, $...KWARGS)'
+      - pattern: 'subprocess.run($ARGS, shell=True, $...KWARGS)'
+      - pattern: 'subprocess.Popen($ARGS, shell=True, $...KWARGS)'
+      - pattern: 'subprocess.check_call($ARGS, shell=True, $...KWARGS)'
+      - pattern: 'subprocess.check_output($ARGS, shell=True, $...KWARGS)'
+
+  - id: python-insecure-tls
+    languages:
+      - python
+    severity: ERROR
+    message: >-
+      TLS/HTTP certificate verification is disabled, breaking the trust
+      boundary. Never disable verification in production code.
+    metadata:
+      cwe:
+        - "CWE-295: Improper Certificate Validation"
+      confidence: HIGH
+    pattern-either:
+      - pattern: 'requests.$FUNC($ARGS, verify=False, $...KWARGS)'
+      - pattern: 'ssl._create_unverified_context()'
