@@ -22,6 +22,21 @@ Go-сервис SHALL предоставлять `POST /v1/pii/detect`, `POST /v
 - **WHEN** сервис успешно обрабатывает `POST /process`
 - **THEN** ответ `200` содержит строковое поле `result` и не содержит дополнительных полей
 
+### Requirement: Runtime flow orchestration
+Основной runtime flow SHALL быть `запрос пользователя -> маскирование/токенизация ПДн -> вызов настраиваемой LLM -> демаскирование ответа LLM -> ответ пользователю`. Оркестрация SHALL выполняться на Go, LLM SHALL получать только защищённый текст, а ошибки tokenization/vault/LLM/detokenization SHALL fail closed без plaintext fallback. Benchmark adapter `POST /process` SHALL оставаться отдельным mask/restore контуром с текущим протоколом checker и MUST NOT вызывать LLM.
+
+#### Scenario: LLM receives only protected text
+- **WHEN** runtime flow обрабатывает запрос пользователя с ПДн
+- **THEN** LLM получает только защищённый текст, а ответ пользователю формируется после демаскирования ответа LLM
+
+#### Scenario: Runtime flow fails closed on any stage error
+- **WHEN** ошибка возникает на этапе tokenization, vault, LLM или detokenization
+- **THEN** runtime flow завершается ошибкой без plaintext fallback
+
+#### Scenario: Process adapter does not call LLM
+- **WHEN** клиент вызывает `POST /process`
+- **THEN** adapter выполняет только mask/restore по протоколу checker и не вызывает LLM
+
 ### Requirement: Process record state machine
 Для каждого `payload_id` система SHALL вести record state machine с минимальными состояниями `claim`/`ready`/`expired` (или эквивалентной record state machine). Для нового `payload_id` вход маскируется и correlation record атомарно сохраняется. Повтор исходного payload идемпотентно возвращает ту же ранее выданную маску. Передача ранее выданной маски с тем же `payload_id` восстанавливает оригинал без NER. Любой третий несвязанный payload для того же id возвращает безопасный `409` и не меняет запись. Restore является повторяемым чтением, а не необратимым переходом в `RESTORED`.
 

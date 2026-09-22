@@ -115,6 +115,7 @@
 - [ ] 12.4 Добавить E2E demo mask -> external processing preserving tokens -> restore; observable check: automated E2E command проходит.
 - [ ] 12.5 Добавить Dockerfile и docker-compose для Go service и Python worker; observable check: `docker compose config` проходит и startup документирован.
 - [ ] 12.6 Добавить README с запуском Go-сервиса, Python worker-а, fast mode, конфигом vault, demo round trip и инструкцией настройки consumer policy не более пяти предложений; observable check: команды из README проверены вручную или smoke script.
+- [ ] 12.7 Реализовать минимальный Go runtime coordinator с инъецируемым/настраиваемым LLM client boundary и покрыть его automated E2E полного пути mask -> LLM -> demask: fake LLM подтверждает, что наружу к LLM уходит только защищённый текст, stage errors (tokenization/vault/LLM/detokenization) fail closed без plaintext fallback, а `POST /process` остаётся отдельным mask/restore контуром и сам LLM не вызывает; observable check: automated E2E команда проходит.
 
 ## 13. Source-only ZIP, deployment и live smoke
 

@@ -67,6 +67,17 @@ Detokenizer SHALL находить tokens в тексте, разрешать ma
 - **WHEN** клиент повторно передаёт ранее выданную маску с тем же `payload_id`
 - **THEN** сервис снова возвращает восстановленный оригинал, не переводя запись в необратимое состояние
 
+### Requirement: Runtime flow demasking after LLM
+В основном runtime flow LLM SHALL получать только защищённый текст, а демаскирование ответа LLM SHALL выполняться после вызова LLM перед ответом пользователю. Ошибки tokenization/vault/LLM/detokenization SHALL fail closed без plaintext fallback.
+
+#### Scenario: LLM output is demasked before user response
+- **WHEN** runtime flow получает ответ LLM, содержащий ранее выданные tokens
+- **THEN** сервис демаскирует ответ LLM и возвращает пользователю восстановленный текст
+
+#### Scenario: Detokenization failure fails closed in runtime flow
+- **WHEN** демаскирование ответа LLM завершается ошибкой
+- **THEN** runtime flow завершается ошибкой без plaintext fallback
+
 ### Requirement: Vault unavailability fails closed
 При недоступности vault система SHALL возвращать `503` без `result` и MUST NOT возвращать необработанный plaintext как `result`.
 
