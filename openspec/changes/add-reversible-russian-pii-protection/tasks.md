@@ -59,7 +59,7 @@
 
 ## 5. Go model client и rules/validators (WS-B)
 
-- [ ] 5.1 Реализовать Go model client: timeout/cancellation, fast/model mode, JSON schema, source propagation, bounds/UTF-8 offset validation; observable check: unit tests для invalid spans и model-source propagation проходят.
+- [x] 5.1 Реализовать Go model client: timeout/cancellation, fast/model mode, JSON schema, source propagation, bounds/UTF-8 offset validation; observable check: unit tests для invalid spans и model-source propagation проходят.
 - [ ] 5.2 Реализовать registry типов ПДн и candidate model для всех канонических типов; observable check: registry lookup unit tests проходят.
 - [ ] 5.3 Реализовать regex candidates для email и phone; observable check: table tests с synthetic fixtures проходят.
 - [ ] 5.4 Реализовать regex candidates для passport, division code и driver license; observable check: table tests с synthetic fixtures проходят.
