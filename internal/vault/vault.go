@@ -11,15 +11,16 @@
 // The persistent adapter is intentionally NOT implemented here; it is a later
 // task. The interface below is the contract that such an adapter must satisfy.
 //
-// Scope of this package (task 7.3): the Vault interface and the in-memory demo
-// adapter. TTL, scope revoke, detokenization and HTTP integration are separate
-// tasks and are not implemented here.
+// Scope of this package (task 7.4): the Vault interface and the in-memory demo
+// adapter with TTL and scope revoke. Detokenization and HTTP integration are
+// separate tasks and are not implemented here.
 package vault
 
 import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 )
 
 // Stable sentinel errors returned by Vault operations. They are exported so
@@ -38,8 +39,12 @@ var (
 	ErrConflict = errors.New("vault: mapping conflict")
 	// ErrNotFound reports that no mapping exists for the requested (scope,
 	// token) key. It is also returned when a token belongs to a different
-	// scope, so a cross-scope token is never disclosed.
+	// scope, or when the mapping has expired, so an expired or cross-scope
+	// token is never disclosed.
 	ErrNotFound = errors.New("vault: mapping not found")
+	// ErrInvalidTTL reports a non-positive TTL passed to the Memory
+	// constructor. It never embeds the TTL value.
+	ErrInvalidTTL = errors.New("vault: invalid ttl")
 )
 
 // Vault stores and resolves reversible token mappings by the exact composite
@@ -62,9 +67,19 @@ type Vault interface {
 
 	// Resolve returns the original value for the exact (scope, token) key, or
 	// ErrNotFound if no mapping exists. A token stored under a different scope
-	// is never disclosed: Resolve returns ErrNotFound for it. The returned
-	// error never embeds the scope or token.
+	// is never disclosed: Resolve returns ErrNotFound for it. An expired
+	// mapping is also never disclosed: Resolve returns ErrNotFound and may
+	// lazily delete the expired entry. The returned error never embeds the
+	// scope or token.
 	Resolve(ctx context.Context, scope, token string) (string, error)
+
+	// RevokeScope atomically deletes every mapping belonging to scope. It is
+	// idempotent: revoking an unknown or already-revoked scope succeeds and
+	// leaves other scopes untouched. After revocation, tokens of that scope
+	// are no longer disclosed, while new mappings may be saved under the same
+	// scope again. An empty scope returns ErrEmptyScope. The returned error
+	// never embeds the scope.
+	RevokeScope(ctx context.Context, scope string) error
 }
 
 // key is the private comparable composite key identifying one mapping slot.
@@ -75,6 +90,13 @@ type key struct {
 	token string
 }
 
+// entry is one stored mapping slot. expiresAt is the wall-clock time after
+// which the mapping must no longer be disclosed.
+type entry struct {
+	original  string
+	expiresAt time.Time
+}
+
 // Memory is a thread-safe in-memory demo adapter for Vault. It stores plaintext
 // originals in volatile memory and is intended only for local demos and tests.
 //
@@ -83,16 +105,40 @@ type key struct {
 // intentionally not implemented here.
 type Memory struct {
 	mu      sync.Mutex
-	mapping map[key]string
+	mapping map[key]entry
+	ttl     time.Duration
+	now     func() time.Time
 }
 
-// NewMemory returns an empty in-memory demo adapter.
-func NewMemory() *Memory {
-	return &Memory{mapping: make(map[key]string)}
+// NewMemory returns an empty in-memory demo adapter with the given TTL. Every
+// mapping saved through it expires ttl after it is first stored. A non-positive
+// ttl is rejected with ErrInvalidTTL. The public constructor uses the real
+// wall clock; tests should use newMemoryWithClock to control time without
+// sleeping.
+func NewMemory(ttl time.Duration) (*Memory, error) {
+	return newMemoryWithClock(ttl, time.Now)
+}
+
+// newMemoryWithClock returns an empty in-memory demo adapter whose expiry
+// decisions use the injected clock. It is unexported so production callers use
+// the real clock via NewMemory while tests can drive time deterministically.
+func newMemoryWithClock(ttl time.Duration, now func() time.Time) (*Memory, error) {
+	if ttl <= 0 {
+		return nil, ErrInvalidTTL
+	}
+	return &Memory{
+		mapping: make(map[key]entry),
+		ttl:     ttl,
+		now:     now,
+	}, nil
 }
 
 // Save records the mapping (scope, token) -> original. See Vault.Save for the
-// full contract. It checks ctx cancellation before acquiring the lock.
+// full contract. It checks ctx cancellation before acquiring the lock. The
+// mapping expires ttl after it is first stored; a repeated idempotent save of
+// the same original does not refresh the expiry. An already-expired mapping is
+// treated as absent: it is replaced by a fresh mapping with a new expiry,
+// regardless of whether the original matches.
 func (m *Memory) Save(ctx context.Context, scope, token, original string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -112,19 +158,25 @@ func (m *Memory) Save(ctx context.Context, scope, token, original string) error 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	now := m.now()
 	if existing, ok := m.mapping[k]; ok {
-		if existing == original {
-			return nil
+		if now.Before(existing.expiresAt) {
+			if existing.original == original {
+				return nil
+			}
+			return ErrConflict
 		}
-		return ErrConflict
+		// The existing mapping is expired and must not influence the new
+		// lifecycle: treat the key as absent and replace it below.
 	}
-	m.mapping[k] = original
+	m.mapping[k] = entry{original: original, expiresAt: now.Add(m.ttl)}
 	return nil
 }
 
 // Resolve returns the original value for the exact (scope, token) key, or
 // ErrNotFound. See Vault.Resolve for the full contract. It checks ctx
-// cancellation before acquiring the lock.
+// cancellation before acquiring the lock. An expired mapping is not disclosed:
+// Resolve returns ErrNotFound and lazily deletes the expired entry.
 func (m *Memory) Resolve(ctx context.Context, scope, token string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -141,9 +193,35 @@ func (m *Memory) Resolve(ctx context.Context, scope, token string) (string, erro
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	original, ok := m.mapping[k]
+	e, ok := m.mapping[k]
 	if !ok {
 		return "", ErrNotFound
 	}
-	return original, nil
+	if !m.now().Before(e.expiresAt) {
+		delete(m.mapping, k)
+		return "", ErrNotFound
+	}
+	return e.original, nil
+}
+
+// RevokeScope atomically deletes every mapping belonging to scope. See
+// Vault.RevokeScope for the full contract. It checks ctx cancellation before
+// acquiring the lock.
+func (m *Memory) RevokeScope(ctx context.Context, scope string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if scope == "" {
+		return ErrEmptyScope
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for k := range m.mapping {
+		if k.scope == scope {
+			delete(m.mapping, k)
+		}
+	}
+	return nil
 }
