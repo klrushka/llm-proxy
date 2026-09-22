@@ -85,7 +85,7 @@
 
 ## 8. Long text windowing (WS-B)
 
-- [ ] 8.1 Реализовать windowing/chunking NER с overlap и bounded parallelism; observable check: windowing unit tests проходят.
+- [x] 8.1 Реализовать windowing/chunking NER с overlap и bounded parallelism; observable check: windowing unit tests проходят.
 - [ ] 8.2 Реализовать восстановление глобальных UTF-8 offsets из окон; observable check: offset reconstruction unit tests проходят.
 - [ ] 8.3 Реализовать подсчёт токенов через tokenizer выбранной модели и acceptance для входа до 100 000 токенов; observable check: token-count acceptance test проходит.
 
