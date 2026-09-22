@@ -7,6 +7,8 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+
+	"github.com/klrushka/llm-proxy/internal/metrics"
 )
 
 // ReadyFunc reports whether the service is ready to serve traffic. A nil
@@ -19,6 +21,7 @@ type Option func(*options)
 type options struct {
 	pii     PIIHandlers
 	process ProcessFunc
+	metrics *metrics.Registry
 }
 
 // WithPIIHandlers wires the extended /v1/pii/* operations into the router.
@@ -28,12 +31,20 @@ func WithPIIHandlers(h PIIHandlers) Option {
 	return func(o *options) { o.pii = h }
 }
 
+// WithMetrics wires a metrics.Registry into the router. The registry's handler
+// serves GET /metrics and the POST /process operation is instrumented to record
+// safe latency and token-count aggregates. When provided it takes precedence
+// over the positional metrics handler argument.
+func WithMetrics(reg *metrics.Registry) Option {
+	return func(o *options) { o.metrics = reg }
+}
+
 // NewRouter builds the base router. ready is the injected readiness probe;
 // metrics is the injected metrics handler. A nil ready probe fails closed as
 // not ready. A nil metrics handler leaves the endpoint registered and
 // returns 503 instead of panicking. Options register the extended /v1/pii/*
-// routes.
-func NewRouter(ready ReadyFunc, metrics http.Handler, opts ...Option) *http.ServeMux {
+// routes and, via WithMetrics, the real metrics handler and instrumentation.
+func NewRouter(ready ReadyFunc, metricsHandler http.Handler, opts ...Option) *http.ServeMux {
 	var o options
 	for _, opt := range opts {
 		opt(&o)
@@ -41,9 +52,13 @@ func NewRouter(ready ReadyFunc, metrics http.Handler, opts ...Option) *http.Serv
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", handleLive)
 	mux.HandleFunc("GET /health/ready", handleReady(ready))
-	mux.Handle("GET /metrics", handleMetrics(metrics))
+	if o.metrics != nil {
+		mux.Handle("GET /metrics", o.metrics.Handler())
+	} else {
+		mux.Handle("GET /metrics", handleMetrics(metricsHandler))
+	}
 	registerPIIRoutes(mux, o.pii)
-	registerProcessRoute(mux, o.process)
+	registerProcessRoute(mux, o.process, o.metrics)
 	return mux
 }
 

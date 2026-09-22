@@ -99,7 +99,7 @@
 
 ## 10. Метрики и quality tooling (WS-D)
 
-- [ ] 10.1 Реализовать метрики latency, RPS и TPS на `GET /metrics`; observable check: metrics endpoint test проходит.
+- [x] 10.1 Реализовать метрики latency, RPS и TPS на `GET /metrics`; observable check: metrics endpoint test проходит.
 - [ ] 10.2 Реализовать scorer/harness для per-type precision/recall/F1, нормализованного span-based Levenshtein качества маскирования и exact-match восстановления; observable check: harness запускается на локальном synthetic corpus.
 - [ ] 10.3 Проверить целевой итоговый показатель официального checker не ниже 95 процентов; observable check: quality test проходит.
 

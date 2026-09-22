@@ -9,7 +9,9 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/klrushka/llm-proxy/internal/metrics"
 	"github.com/klrushka/llm-proxy/internal/process"
 )
 
@@ -22,9 +24,27 @@ func WithProcess(fn ProcessFunc) Option {
 	return func(o *options) { o.process = fn }
 }
 
-// registerProcessRoute registers the POST /process route on mux.
-func registerProcessRoute(mux *http.ServeMux, fn ProcessFunc) {
+// registerProcessRoute registers the POST /process route on mux. When reg is
+// non-nil the operation is wrapped to record safe latency and token-count
+// aggregates for the metrics endpoint.
+func registerProcessRoute(mux *http.ServeMux, fn ProcessFunc, reg *metrics.Registry) {
+	if reg != nil && fn != nil {
+		fn = recordProcess(reg, fn)
+	}
 	mux.HandleFunc("POST /process", handleProcess(fn))
+}
+
+// recordProcess wraps fn to record one safe observation per request. It
+// measures the operation duration and counts the tokens in the request payload
+// as a numeric aggregate. It never records the payload, the result, a token
+// value or any other plaintext.
+func recordProcess(reg *metrics.Registry, fn ProcessFunc) ProcessFunc {
+	return func(ctx context.Context, req process.Request) (process.Response, error) {
+		start := time.Now()
+		resp, err := fn(ctx, req)
+		reg.Record(time.Since(start), metrics.CountTokens(req.Payload))
+		return resp, err
+	}
 }
 
 func handleProcess(fn ProcessFunc) http.HandlerFunc {
