@@ -1,0 +1,4 @@
+gliner2[local] @ git+https://github.com/fastino-ai/GLiNER2@3c913c7369301133d3b7699252074c4303ada50e
+transformers==4.57.6
+torch==2.14.0
+protobuf==7.36.2
