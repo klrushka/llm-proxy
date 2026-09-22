@@ -91,7 +91,7 @@
 
 ## 9. Audit logging и безопасность (WS-D)
 
-- [ ] 9.1 Реализовать structured audit logging только разрешенных metadata; observable check: log capture test, что synthetic ПДн values отсутствуют, проходит.
+- [x] 9.1 Реализовать structured audit logging только разрешенных metadata; observable check: log capture test, что synthetic ПДн values отсутствуют, проходит.
 - [ ] 9.2 Запретить возврат tokenized text при ошибке сохранения mapping в vault; observable check: failure injection test проходит.
 - [ ] 9.3 Проверить, что ошибки не логируют request/response body, Authorization, ciphertext, keys, CVV/PIN; observable check: security unit tests проходят.
 - [ ] 9.4 Реализовать воспроизводимый Gitleaks gate: локальная команда и CI, сканирование Git history и текущих файлов, redacted output, без baseline для чистого нового репозитория; observable check: оба режима завершаются без findings.
