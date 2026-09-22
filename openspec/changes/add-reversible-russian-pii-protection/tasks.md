@@ -50,7 +50,7 @@
 
 - [x] 3.1 Реализовать transport-resolved consumer policy с benchmark/default consumer; observable check: policy resolution unit tests проходят.
 - [x] 3.2 Реализовать per-system настройки типов ПДн; observable check: per-system ownership tests проходят.
-- [ ] 3.3 Реализовать per-system настройки demasking; observable check: per-system demasking tests проходят.
+- [x] 3.3 Реализовать per-system настройки demasking; observable check: per-system demasking tests проходят.
 
 ## 4. Python model worker (WS-B)
 

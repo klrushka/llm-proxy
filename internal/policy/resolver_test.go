@@ -261,6 +261,53 @@ func TestResolvePerSystemTypeSettings(t *testing.T) {
 	}
 }
 
+func TestResolvePerSystemDemaskingSettings(t *testing.T) {
+	def := NewPolicy(DefaultConsumerID, nil)
+	def.AllowDemasking = true
+	consumerA := NewPolicy("consumer-a", nil)
+	r := NewResolver(def, map[string]Policy{"consumer-a": consumerA})
+
+	blank, err := r.Resolve("")
+	if err != nil {
+		t.Fatalf("Resolve(\"\") error = %v, want nil", err)
+	}
+	if !blank.AllowDemasking {
+		t.Error("blank policy AllowDemasking = false, want true")
+	}
+
+	consumer, err := r.Resolve("consumer-a")
+	if err != nil {
+		t.Fatalf("Resolve(\"consumer-a\") error = %v, want nil", err)
+	}
+	if consumer.AllowDemasking {
+		t.Error("consumer-a AllowDemasking = true, want false")
+	}
+
+	if blank.AllowDemasking == consumer.AllowDemasking {
+		t.Error("demasking setting must differ between benchmark/default and consumer-a")
+	}
+
+	blank.AllowDemasking = false
+	blank2, err := r.Resolve("")
+	if err != nil {
+		t.Fatalf("Resolve(\"\") after mutation error = %v", err)
+	}
+	if !blank2.AllowDemasking {
+		t.Error("resolver stored default setting changed after mutating earlier result")
+	}
+
+	unknown, err := r.Resolve("unknown-consumer")
+	if err != ErrUnknownConsumer {
+		t.Fatalf("Resolve error = %v, want exact bare ErrUnknownConsumer", err)
+	}
+	if !reflect.DeepEqual(unknown, Policy{}) {
+		t.Errorf("Resolve returned non-zero Policy %+v, want zero", unknown)
+	}
+	if unknown.AllowDemasking {
+		t.Error("unknown consumer must fail closed with AllowDemasking=false")
+	}
+}
+
 func TestResolveConcurrentReadsSafe(t *testing.T) {
 	def := NewPolicy(DefaultConsumerID, []string{"EMAIL"})
 	r := NewResolver(def, map[string]Policy{
