@@ -12,7 +12,8 @@ import (
 // original input. Start and End are the window's global UTF-8 byte offsets into
 // the original input, start inclusive and end exclusive. Entities holds the
 // model candidates detected in this window; their offsets are local to the
-// window on this step. Global offset reconstruction is a later task (8.2).
+// window. ReconstructGlobalOffsets converts those local offsets back to global
+// offsets of the original input.
 type Window struct {
 	Text     string
 	Start    int
