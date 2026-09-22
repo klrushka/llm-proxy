@@ -257,10 +257,7 @@ func TestConcurrentSafety(t *testing.T) {
 }
 
 func TestTokenNeverContainsPlaintextOrScope(t *testing.T) {
-	g, err := New()
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
+	g := newGenerator(&seqReader{blocks: [][]byte{block("00000000000000000000000000000000")}}, mustRegistry(t))
 
 	scope := "SCOPE-UNIQUE-9f3a"
 	value := "Иванов Иван Иванович ivanov@example.com +7 900 123-45-67"
@@ -268,12 +265,24 @@ func TestTokenNeverContainsPlaintextOrScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Token() error = %v", err)
 	}
+	if tok == scope || tok == value {
+		t.Errorf("token %q equals scope or value", tok)
+	}
 	if strings.Contains(tok, scope) {
 		t.Errorf("token %q contains scope %q", tok, scope)
 	}
-	for _, part := range []string{"Иванов", "Иван", "ivanov", "example.com", "900", "123", "45", "67"} {
+	if strings.Contains(tok, value) {
+		t.Errorf("token %q contains value %q", tok, value)
+	}
+	// Substantial synthetic plaintext markers that cannot appear in a lowercase
+	// hex suffix (they contain non-hex characters), so the check is
+	// deterministic and free of probabilistic collisions.
+	for _, part := range []string{"Иванов", "Иван", "ivanov", "example.com"} {
 		if strings.Contains(tok, part) {
 			t.Errorf("token %q contains plaintext part %q", tok, part)
 		}
+	}
+	if !tokenShape.MatchString(tok) {
+		t.Errorf("Token() = %q, does not match shape %v", tok, tokenShape)
 	}
 }
