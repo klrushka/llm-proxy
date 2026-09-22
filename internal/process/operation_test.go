@@ -122,3 +122,75 @@ func TestOperationDistinctPayloadIDsMaskIndependently(t *testing.T) {
 		t.Errorf("mask calls = %d, want 2", calls)
 	}
 }
+
+func TestOperationRestoreByMaskReturnsOriginal(t *testing.T) {
+	calls := 0
+	op := NewOperation(NewStore(), func(_ context.Context, payload string) (string, error) {
+		calls++
+		return "masked:" + payload, nil
+	})
+
+	first, err := op.Handle(context.Background(), Request{Payload: "synthetic original", PayloadID: "id-1"})
+	if err != nil {
+		t.Fatalf("first Handle() error = %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("mask calls after first = %d, want 1", calls)
+	}
+
+	restored, err := op.Handle(context.Background(), Request{Payload: first.Result, PayloadID: "id-1"})
+	if err != nil {
+		t.Fatalf("restore Handle() error = %v", err)
+	}
+	if restored.Result != "synthetic original" {
+		t.Errorf("restored Result = %q, want %q", restored.Result, "synthetic original")
+	}
+	if calls != 1 {
+		t.Errorf("mask calls after restore = %d, want 1 (no re-masking)", calls)
+	}
+}
+
+func TestOperationRestoreIsRepeatableRead(t *testing.T) {
+	calls := 0
+	op := NewOperation(NewStore(), func(_ context.Context, payload string) (string, error) {
+		calls++
+		return "masked:" + payload, nil
+	})
+
+	first, err := op.Handle(context.Background(), Request{Payload: "synthetic original", PayloadID: "id-1"})
+	if err != nil {
+		t.Fatalf("first Handle() error = %v", err)
+	}
+	before, err := op.store.Get("id-1")
+	if err != nil {
+		t.Fatalf("Get() before restore error = %v", err)
+	}
+
+	for i := 0; i < 2; i++ {
+		restored, err := op.Handle(context.Background(), Request{Payload: first.Result, PayloadID: "id-1"})
+		if err != nil {
+			t.Fatalf("restore %d Handle() error = %v", i, err)
+		}
+		if restored.Result != "synthetic original" {
+			t.Errorf("restore %d Result = %q, want %q", i, restored.Result, "synthetic original")
+		}
+	}
+
+	if calls != 1 {
+		t.Errorf("mask calls = %d, want 1 (no re-masking on restore)", calls)
+	}
+
+	after, err := op.store.Get("id-1")
+	if err != nil {
+		t.Fatalf("Get() after restore error = %v", err)
+	}
+	if before.PayloadID != after.PayloadID ||
+		before.State != after.State ||
+		before.Original != after.Original ||
+		before.Result != after.Result {
+		t.Errorf("record changed after restore:\nbefore = %+v\nafter  = %+v", before, after)
+	}
+	if after.State != StateReady {
+		t.Errorf("State = %q, want %q (record stays ready)", after.State, StateReady)
+	}
+}

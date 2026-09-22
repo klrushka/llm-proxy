@@ -29,7 +29,9 @@ func NewOperation(store *Store, mask MaskFunc) *Operation {
 // Handle processes a request idempotently. For a new payload_id it masks the
 // payload exactly once, stores original+result and transitions the record to
 // ready. A retry of the same original returns the stored result without
-// re-masking. A masking error fails closed (no plaintext) and expires the
+// re-masking. Passing the previously issued result (mask) restores the
+// original without re-masking and is a repeatable read that does not change
+// the record. A masking error fails closed (no plaintext) and expires the
 // claim.
 func (o *Operation) Handle(ctx context.Context, req Request) (Response, error) {
 	rec, err := o.store.Get(req.PayloadID)
@@ -40,8 +42,16 @@ func (o *Operation) Handle(ctx context.Context, req Request) (Response, error) {
 		return Response{}, err
 	}
 
-	if rec.State == StateReady && rec.Original == req.Payload {
-		return Response{Result: rec.Result}, nil
+	if rec.State == StateReady {
+		switch req.Payload {
+		case rec.Original:
+			// Idempotent retry of the original: return the stored mask.
+			return Response{Result: rec.Result}, nil
+		case rec.Result:
+			// Restore by previously issued mask: return the original without
+			// re-masking. Repeatable read; the record stays ready.
+			return Response{Result: rec.Original}, nil
+		}
 	}
 	return Response{}, ErrInvalidTransition
 }
