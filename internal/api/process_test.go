@@ -224,6 +224,62 @@ func TestProcessModelUnavailableReturns503NoResult(t *testing.T) {
 	}
 }
 
+func TestProcessTrailingWhitespaceAccepted(t *testing.T) {
+	called := false
+	h := ProcessFunc(func(_ context.Context, req process.Request) (process.Response, error) {
+		called = true
+		return process.Response{Result: "masked:" + req.Payload}, nil
+	})
+	mux := NewRouter(nil, nil, WithProcess(h))
+	rec := doJSONRequest(t, mux, http.MethodPost, "/process",
+		"{\"payload\":\"Клиент ТЕСТОВ\",\"payload_id\":\"p1\"}   \n\t")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !called {
+		t.Error("operation not called for valid request with trailing whitespace")
+	}
+}
+
+func TestProcessSecondJSONValueRejected(t *testing.T) {
+	called := false
+	h := ProcessFunc(func(_ context.Context, _ process.Request) (process.Response, error) {
+		called = true
+		return process.Response{}, nil
+	})
+	mux := NewRouter(nil, nil, WithProcess(h))
+	rec := doJSONRequest(t, mux, http.MethodPost, "/process",
+		`{"payload":"x","payload_id":"p1"} {"payload":"y","payload_id":"p2"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if called {
+		t.Error("operation called for body with a second JSON value")
+	}
+	var errResp errorResponse
+	decodeJSONResponse(t, rec, &errResp)
+	if errResp.Error != "invalid JSON body" {
+		t.Errorf("error = %q, want %q", errResp.Error, "invalid JSON body")
+	}
+}
+
+func TestProcessTrailingNonWhitespaceRejected(t *testing.T) {
+	called := false
+	h := ProcessFunc(func(_ context.Context, _ process.Request) (process.Response, error) {
+		called = true
+		return process.Response{}, nil
+	})
+	mux := NewRouter(nil, nil, WithProcess(h))
+	rec := doJSONRequest(t, mux, http.MethodPost, "/process",
+		`{"payload":"x","payload_id":"p1"} garbage`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if called {
+		t.Error("operation called for body with trailing non-whitespace content")
+	}
+}
+
 func TestProcessRetryAfterAbsentOnNonOverload(t *testing.T) {
 	cases := []struct {
 		name string

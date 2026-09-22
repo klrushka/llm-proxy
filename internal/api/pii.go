@@ -8,6 +8,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 )
@@ -218,10 +219,16 @@ func handleRevokeScope(op RevokeScopeFunc) http.HandlerFunc {
 }
 
 // decodeBody decodes a JSON request body into dst. On malformed JSON it
-// writes a safe 400 and returns false.
+// writes a safe 400 and returns false. After decoding dst it requires the
+// body to contain no further JSON value; trailing whitespace is allowed, but
+// any second JSON value or non-whitespace trailing content is rejected.
 func decodeBody(w http.ResponseWriter, r *http.Request, dst any) bool {
 	dec := json.NewDecoder(r.Body)
 	if err := dec.Decode(dst); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid JSON body")
+		return false
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
 		writeJSONError(w, http.StatusBadRequest, "invalid JSON body")
 		return false
 	}
