@@ -16,6 +16,7 @@ func resetEnv(t *testing.T) {
 		EnvVaultTTL,
 		EnvModelMode,
 		EnvVaultKey,
+		EnvModelClientTimeout,
 	} {
 		value, present := os.LookupEnv(name)
 		if err := os.Unsetenv(name); err != nil {
@@ -60,6 +61,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.ModelMode != DefaultModelMode {
 		t.Errorf("ModelMode = %q, want %q", cfg.ModelMode, DefaultModelMode)
 	}
+	if cfg.ModelClientTimeout != DefaultModelClientTimeout {
+		t.Errorf("ModelClientTimeout = %v, want %v", cfg.ModelClientTimeout, DefaultModelClientTimeout)
+	}
 
 	want := make([]byte, 32)
 	for i := range want {
@@ -77,6 +81,7 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv(EnvVaultTTL, "30s")
 	t.Setenv(EnvModelMode, ModelModeFast)
 	t.Setenv(EnvVaultKey, validKey(t))
+	t.Setenv(EnvModelClientTimeout, "45s")
 
 	cfg, err := Load()
 	if err != nil {
@@ -93,6 +98,9 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if cfg.ModelMode != ModelModeFast {
 		t.Errorf("ModelMode = %q", cfg.ModelMode)
+	}
+	if cfg.ModelClientTimeout != 45*time.Second {
+		t.Errorf("ModelClientTimeout = %v", cfg.ModelClientTimeout)
 	}
 }
 
@@ -123,6 +131,26 @@ func TestLoadInvalidModelMode(t *testing.T) {
 
 	if _, err := Load(); err == nil {
 		t.Fatal("Load() expected error for invalid model mode")
+	}
+}
+
+func TestLoadInvalidModelClientTimeout(t *testing.T) {
+	resetEnv(t)
+	t.Setenv(EnvModelClientTimeout, "not-a-duration")
+	t.Setenv(EnvVaultKey, validKey(t))
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() expected error for invalid model client timeout")
+	}
+}
+
+func TestLoadNonPositiveModelClientTimeout(t *testing.T) {
+	resetEnv(t)
+	t.Setenv(EnvModelClientTimeout, "0s")
+	t.Setenv(EnvVaultKey, validKey(t))
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() expected error for non-positive model client timeout")
 	}
 }
 

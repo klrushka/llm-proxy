@@ -246,6 +246,28 @@ class ServerTest(unittest.TestCase):
         except urllib.error.HTTPError as err:
             return err.code, json.loads(err.read().decode("utf-8"))
 
+    def test_default_host_is_loopback(self) -> None:
+        # The safe local default must bind loopback only, never 0.0.0.0.
+        self.assertEqual(self.server.server_address[0], "127.0.0.1")
+
+    def test_explicit_host_binds_all_interfaces(self) -> None:
+        # A container must be able to bind 0.0.0.0 so the Go service can reach
+        # the worker over the internal Docker network.
+        server = create_server(self.worker, 0, host="0.0.0.0")
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            self.assertEqual(server.server_address[0], "0.0.0.0")
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=5) as resp:
+                self.assertEqual(resp.status, 200)
+                body = json.loads(resp.read().decode("utf-8"))
+            self.assertEqual(body["status"], "ok")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
     def test_health_reports_both_backends(self) -> None:
         status, body = self._get("/health")
         self.assertEqual(status, 200)

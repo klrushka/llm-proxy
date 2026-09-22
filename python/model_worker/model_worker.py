@@ -147,18 +147,24 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
-def create_server(worker: Worker, port: int) -> ThreadingHTTPServer:
+def create_server(worker: Worker, port: int, host: str = "127.0.0.1") -> ThreadingHTTPServer:
     handler = type("BoundHandler", (_Handler,), {"worker": worker})
-    return ThreadingHTTPServer(("127.0.0.1", port), handler)
+    return ThreadingHTTPServer((host, port), handler)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="PII NER model worker")
     parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument(
+        "--host",
+        type=str,
+        default="127.0.0.1",
+        help="bind address; keep 127.0.0.1 outside Docker, use 0.0.0.0 in a container",
+    )
     args = parser.parse_args()
 
     worker = build_worker(_load_rubert, _load_gliner)
-    server = create_server(worker, args.port)
+    server = create_server(worker, args.port, args.host)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

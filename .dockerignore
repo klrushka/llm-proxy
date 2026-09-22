@@ -1,0 +1,37 @@
+# Source-control metadata
+.git
+.gitignore
+.github
+
+# Local virtualenvs and Python caches
+.venv
+__pycache__
+*.py[cod]
+
+# Local datasets and test fixtures are not needed in images
+testdata
+
+# Local tooling and scratch
+.codescoring
+.opencode
+.semgrep.yml
+Makefile
+
+# Task-scoped docs and scripts are not needed in images
+docs
+scripts
+
+# Local secrets and env files (never baked into images)
+.env
+.env.*
+*.pem
+*.key
+
+# Build artifacts and archives
+*.log
+*.zip
+*.tar
+*.gz
+
+# Editor/OS noise
+.DS_Store

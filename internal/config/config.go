@@ -12,20 +12,22 @@ import (
 // Environment variable names. Exported so tests and future wiring do not
 // duplicate the strings.
 const (
-	EnvPrefix           = "PII_"
-	EnvAPIListenAddress = EnvPrefix + "API_LISTEN_ADDRESS"
-	EnvModelWorkerURL   = EnvPrefix + "MODEL_WORKER_URL"
-	EnvVaultTTL         = EnvPrefix + "VAULT_TTL"
-	EnvModelMode        = EnvPrefix + "MODEL_MODE"
-	EnvVaultKey         = EnvPrefix + "VAULT_KEY"
+	EnvPrefix             = "PII_"
+	EnvAPIListenAddress   = EnvPrefix + "API_LISTEN_ADDRESS"
+	EnvModelWorkerURL     = EnvPrefix + "MODEL_WORKER_URL"
+	EnvVaultTTL           = EnvPrefix + "VAULT_TTL"
+	EnvModelMode          = EnvPrefix + "MODEL_MODE"
+	EnvVaultKey           = EnvPrefix + "VAULT_KEY"
+	EnvModelClientTimeout = EnvPrefix + "MODEL_CLIENT_TIMEOUT"
 )
 
 // Defaults.
 const (
-	DefaultAPIListenAddress = "127.0.0.1:8080"
-	DefaultModelWorkerURL   = "http://127.0.0.1:8000"
-	DefaultVaultTTL         = 15 * time.Minute
-	DefaultModelMode        = ModelModeFull
+	DefaultAPIListenAddress   = "127.0.0.1:8080"
+	DefaultModelWorkerURL     = "http://127.0.0.1:8000"
+	DefaultVaultTTL           = 15 * time.Minute
+	DefaultModelMode          = ModelModeFull
+	DefaultModelClientTimeout = 30 * time.Second
 )
 
 // Model modes.
@@ -36,11 +38,12 @@ const (
 
 // Config holds the resolved service configuration.
 type Config struct {
-	APIListenAddress string
-	ModelWorkerURL   string
-	VaultTTL         time.Duration
-	ModelMode        string
-	VaultKey         VaultKey
+	APIListenAddress   string
+	ModelWorkerURL     string
+	VaultTTL           time.Duration
+	ModelMode          string
+	VaultKey           VaultKey
+	ModelClientTimeout time.Duration
 }
 
 // VaultKey holds the decoded vault encryption key. Its bytes are never
@@ -57,10 +60,11 @@ func (k VaultKey) Bytes() [32]byte {
 // Load reads configuration from the environment and validates it.
 func Load() (Config, error) {
 	cfg := Config{
-		APIListenAddress: DefaultAPIListenAddress,
-		ModelWorkerURL:   DefaultModelWorkerURL,
-		VaultTTL:         DefaultVaultTTL,
-		ModelMode:        DefaultModelMode,
+		APIListenAddress:   DefaultAPIListenAddress,
+		ModelWorkerURL:     DefaultModelWorkerURL,
+		VaultTTL:           DefaultVaultTTL,
+		ModelMode:          DefaultModelMode,
+		ModelClientTimeout: DefaultModelClientTimeout,
 	}
 
 	if v, ok := os.LookupEnv(EnvAPIListenAddress); ok {
@@ -78,6 +82,13 @@ func Load() (Config, error) {
 	}
 	if v, ok := os.LookupEnv(EnvModelMode); ok {
 		cfg.ModelMode = v
+	}
+	if v, ok := os.LookupEnv(EnvModelClientTimeout); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("%s: invalid duration: %w", EnvModelClientTimeout, err)
+		}
+		cfg.ModelClientTimeout = d
 	}
 
 	rawKey, ok := os.LookupEnv(EnvVaultKey)
@@ -121,6 +132,9 @@ func (c Config) validate() error {
 	}
 	if c.ModelMode != ModelModeFull && c.ModelMode != ModelModeFast {
 		return fmt.Errorf("%s: must be %q or %q", EnvModelMode, ModelModeFull, ModelModeFast)
+	}
+	if c.ModelClientTimeout <= 0 {
+		return fmt.Errorf("%s: must be greater than zero", EnvModelClientTimeout)
 	}
 	return nil
 }

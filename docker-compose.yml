@@ -1,0 +1,56 @@
+# Docker Compose for the PII protection service and its Python model worker.
+#
+# The Go service and the Python worker share a private bridge network. Only the
+# Go service's HTTP port is published to the host; the worker is reachable only
+# from the Go container.
+#
+# The vault key is never committed. It is read from the environment and must be
+# a 32-byte value base64-encoded. `docker compose config` fails with a clear
+# message if PII_VAULT_KEY is not set, so no real secret is baked into the repo.
+#
+#   export PII_VAULT_KEY="$(openssl rand -base64 32)"
+#   docker compose up -d --build
+services:
+  pii-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      PII_API_LISTEN_ADDRESS: "0.0.0.0:8080"
+      PII_MODEL_WORKER_URL: "http://model-worker:8000"
+      PII_VAULT_KEY: "${PII_VAULT_KEY:?PII_VAULT_KEY must be set to a 32-byte base64 value}"
+      PII_MODEL_MODE: "${PII_MODEL_MODE:-full}"
+      PII_VAULT_TTL: "${PII_VAULT_TTL:-15m}"
+      PII_MODEL_CLIENT_TIMEOUT: "${PII_MODEL_CLIENT_TIMEOUT:-30s}"
+    ports:
+      - "8080:8080"
+    depends_on:
+      model-worker:
+        condition: service_healthy
+    networks:
+      - internal
+
+  model-worker:
+    build:
+      context: .
+      dockerfile: python/model_worker/Dockerfile
+    # The worker is not published to the host; it is reachable only on the
+    # internal network from the Go service.
+    expose:
+      - "8000"
+    volumes:
+      # Persist the Hugging Face model cache across restarts so the models are
+      # downloaded once on first run.
+      - hf-cache:/home/pii/.cache/huggingface
+    networks:
+      - internal
+
+volumes:
+  hf-cache:
+
+# A private bridge network shared by the Go service and the worker. The worker
+# is not published to the host (only `expose`), so it is reachable only from
+# the Go service. The network is not `internal: true` because the worker needs
+# outbound internet access on first run to download the Hugging Face models.
+networks:
+  internal:
