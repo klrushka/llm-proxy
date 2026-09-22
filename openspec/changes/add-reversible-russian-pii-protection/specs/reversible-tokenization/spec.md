@@ -55,3 +55,21 @@ Detokenizer SHALL находить tokens в тексте, разрешать ma
 #### Scenario: Preserve mode keeps unresolved token
 - **WHEN** detokenize в режиме `preserve` встречает неизвестный token
 - **THEN** token остается без изменений и добавляется в `unresolved_tokens`
+
+### Requirement: Restore by previously issued mask
+Передача ранее выданной маски с тем же `payload_id` SHALL восстанавливать оригинал без повторного NER. Restore является повторяемым чтением, а не необратимым переходом.
+
+#### Scenario: Passing previously issued mask restores original
+- **WHEN** клиент передаёт ранее выданную маску с тем же `payload_id`
+- **THEN** сервис восстанавливает оригинал без повторного NER и возвращает его как `result`
+
+#### Scenario: Restore is repeatable read
+- **WHEN** клиент повторно передаёт ранее выданную маску с тем же `payload_id`
+- **THEN** сервис снова возвращает восстановленный оригинал, не переводя запись в необратимое состояние
+
+### Requirement: Vault unavailability fails closed
+При недоступности vault система SHALL возвращать `503` без `result` и MUST NOT возвращать необработанный plaintext как `result`.
+
+#### Scenario: Vault unavailable fails closed
+- **WHEN** vault недоступен при обработке запроса
+- **THEN** сервис возвращает `503` без `result`

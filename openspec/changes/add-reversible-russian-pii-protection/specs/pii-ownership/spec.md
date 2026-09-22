@@ -35,3 +35,10 @@ Capability определяет, какие найденные сущности 
 #### Scenario: Ambiguous location is not personal automatically
 - **WHEN** текст содержит location без признаков физлица, организации или адреса регистрации
 - **THEN** location получает `personal=false`, `review_recommended=true` и не токенизируется
+
+### Requirement: Per-system type settings
+Consumer policy SHALL определять per-system настройки типов ПДн, влияющие на то, какие типы считаются персональными данными для данной системы.
+
+#### Scenario: Per-system settings affect ownership
+- **WHEN** consumer policy для системы исключает определённый тип из числа ПДн
+- **THEN** сущности этого типа получают `personal=false` и не токенизируются для данной системы

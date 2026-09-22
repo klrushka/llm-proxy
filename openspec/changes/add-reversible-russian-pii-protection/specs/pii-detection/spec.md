@@ -26,6 +26,47 @@ Python worker MUST загружать готовые модели один ра�
 - **WHEN** текст содержит ФИО в обычном, верхнем или смешанном регистре
 - **THEN** detection находит ФИО без предварительного lowercasing исходного текста и возвращает offsets исходной строки
 
+### Requirement: Long text windowing
+Система SHALL поддерживать вход до 100 000 токенов через windowing/chunking NER с overlap, bounded parallelism и восстановлением глобальных UTF-8 offsets. Способ подсчёта токенов SHALL привязываться к tokenizer выбранной модели и фиксироваться как проверяемый acceptance. Токены MUST NOT подменяться символами или словами.
+
+#### Scenario: Long text is processed in windows with global offsets
+- **WHEN** входной текст превышает контекст модели
+- **THEN** текст разбивается на окна с overlap, обрабатывается с bounded parallelism, а результаты объединяются с восстановлением глобальных UTF-8 offsets
+
+#### Scenario: Token counting is bound to model tokenizer
+- **WHEN** сервис определяет размер входа
+- **THEN** подсчёт токенов использует tokenizer выбранной модели, а не символы или слова
+
+### Requirement: Degraded mode on model worker unavailability
+При недоступности model worker система SHALL применять rules-only degraded mode только если consumer policy явно разрешает его; иначе возвращать `503`. RuBERT fallback при недоступном Python worker не называется, потому что RuBERT загружен внутри него.
+
+#### Scenario: Rules-only mode when policy allows
+- **WHEN** model worker недоступен и consumer policy явно разрешает rules-only degraded mode
+- **THEN** detection выполняется только Go rules/validators
+
+#### Scenario: Rules-only mode fails closed when policy disallows
+- **WHEN** model worker недоступен и consumer policy не разрешает degraded mode
+- **THEN** сервис возвращает `503` без `result`
+
+### Requirement: Detection quality metrics
+Качество маскирования SHALL считаться нормализованным span-based Levenshtein в диапазоне 0..1; восстановление SHALL сравниваться exact с исходной строкой; целевой итоговый показатель официального checker SHALL быть не ниже 95 процентов. Локально дополнительно считаются per-type precision/recall/F1. Не утверждается, что каждый precision и recall обязан быть 95 процентов.
+
+#### Scenario: Masking quality uses normalized span-based Levenshtein
+- **WHEN** официальный checker оценивает качество маскирования
+- **THEN** качество считается нормализованным span-based Levenshtein в диапазоне 0..1
+
+#### Scenario: Restoration is compared exact to original
+- **WHEN** официальный checker оценивает восстановление
+- **THEN** восстановленный текст сравнивается exact с исходной строкой
+
+#### Scenario: Overall checker score is at least 95 percent
+- **WHEN** официальный checker оценивает сервис
+- **THEN** итоговый показатель не ниже 95 процентов
+
+#### Scenario: Local harness computes per-type metrics
+- **WHEN** локальный harness запускается на локальном synthetic corpus
+- **THEN** он дополнительно считает per-type precision/recall/F1
+
 ### Requirement: Go rules and validators
 Go-сервис SHALL создавать rule/validator candidates для email, phone, passport, division code, dates, postal code, INN, bank card, CVV, PIN и address components с обязательными checksum/context validations.
 
