@@ -45,6 +45,10 @@ type Resolver interface {
 type DetokenizeResult struct {
 	// Text is the restored text. In strict mode it is empty on any failure.
 	Text string
+	// ResolvedTokenCount is the number of distinct tokens that were resolved
+	// to their original values. It is zero when no tokens were present or when
+	// the operation failed closed.
+	ResolvedTokenCount int
 	// UnresolvedTokens lists tokens that could not be resolved, in order of
 	// first appearance, with no duplicates. It is non-empty only in preserve
 	// mode.
@@ -186,6 +190,7 @@ func Detokenize(ctx context.Context, text, scope string, mode Mode, resolver Res
 	}
 
 	out.Text = string(buf)
+	out.ResolvedTokenCount = len(resolved)
 	out.UnresolvedTokens = unresolved
 	return out, nil
 }

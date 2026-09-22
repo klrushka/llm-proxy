@@ -109,7 +109,7 @@
 
 ## 12. Integration, E2E, Docker и README
 
-- [ ] 12.1 Добавить integration tests для extended `/v1/pii/*` API; observable check: `go test ./...` проходит.
+- [x] 12.1 Добавить integration tests для extended `/v1/pii/*` API; observable check: `go test ./...` проходит.
 - [ ] 12.2 Добавить integration tests для `/process` state/idempotency/concurrency/errors; observable check: `go test ./...` проходит.
 - [ ] 12.3 Добавить integration tests для degradation/overload/no-plaintext leakage; observable check: `go test ./...` проходит.
 - [ ] 12.4 Добавить E2E demo mask -> external processing preserving tokens -> restore; observable check: automated E2E command проходит.
