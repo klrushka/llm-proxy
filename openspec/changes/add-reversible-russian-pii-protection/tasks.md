@@ -34,7 +34,7 @@
 - [x] 1.2 Реализовать extended `/v1/pii/*` handlers (detect/tokenize/detokenize/scope revoke); observable check: handler contract tests проходят.
 - [x] 1.3 Реализовать `/process` adapter handler с exact contract tests (обязательные строковые `payload`/`payload_id`, успешный ответ ровно с `result`); observable check: contract tests проходят.
 - [x] 1.4 Реализовать record state machine `claim`/`ready`/`expired` для `payload_id`; observable check: state machine unit tests проходят.
-- [ ] 1.5 Реализовать идемпотентный retry оригинала (повтор исходного payload возвращает ту же маску); observable check: idempotency unit tests проходят.
+- [x] 1.5 Реализовать идемпотентный retry оригинала (повтор исходного payload возвращает ту же маску); observable check: idempotency unit tests проходят.
 - [ ] 1.6 Реализовать восстановление по ранее выданной маске без NER (repeatable read); observable check: restore unit tests проходят.
 - [ ] 1.7 Реализовать безопасный `409` для третьего несвязанного payload без изменения записи; observable check: conflict unit tests проходят.
 - [ ] 1.8 Реализовать atomic claim/single writer для конкурентного первого запроса; observable check: concurrency unit tests проходят.

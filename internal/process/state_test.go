@@ -128,6 +128,49 @@ func TestTransitionReadyToExpired(t *testing.T) {
 	}
 }
 
+func TestCompleteClaim(t *testing.T) {
+	s := NewStore()
+	if _, err := s.CreateClaim("id-1", "synthetic original"); err != nil {
+		t.Fatalf("CreateClaim() error = %v", err)
+	}
+	if err := s.CompleteClaim("id-1", "masked result"); err != nil {
+		t.Fatalf("CompleteClaim() error = %v", err)
+	}
+	rec, err := s.Get("id-1")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if rec.State != StateReady {
+		t.Errorf("State = %q, want %q", rec.State, StateReady)
+	}
+	if rec.Result != "masked result" {
+		t.Errorf("Result = %q, want %q", rec.Result, "masked result")
+	}
+	if rec.Original != "synthetic original" {
+		t.Errorf("Original = %q, want %q", rec.Original, "synthetic original")
+	}
+}
+
+func TestCompleteClaimNotFound(t *testing.T) {
+	s := NewStore()
+	if err := s.CompleteClaim("missing", "result"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("CompleteClaim() error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestCompleteClaimNotInClaimState(t *testing.T) {
+	s := NewStore()
+	if _, err := s.CreateClaim("id-1", "synthetic original"); err != nil {
+		t.Fatalf("CreateClaim() error = %v", err)
+	}
+	if err := s.Transition("id-1", StateClaim, StateReady); err != nil {
+		t.Fatalf("Transition(claim->ready) error = %v", err)
+	}
+	if err := s.CompleteClaim("id-1", "result"); !errors.Is(err, ErrInvalidTransition) {
+		t.Errorf("CompleteClaim() error = %v, want ErrInvalidTransition", err)
+	}
+}
+
 func TestTransitionNotFound(t *testing.T) {
 	s := NewStore()
 	if err := s.Transition("missing", StateClaim, StateReady); !errors.Is(err, ErrNotFound) {

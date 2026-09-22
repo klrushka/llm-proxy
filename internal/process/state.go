@@ -91,6 +91,24 @@ func (r *Record) snapshot() *Record {
 	return &cp
 }
 
+// CompleteClaim atomically sets the result on a claim record and transitions
+// it to ready. It returns ErrNotFound if no record exists and
+// ErrInvalidTransition if the record is not in claim state.
+func (s *Store) CompleteClaim(payloadID, result string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, ok := s.records[payloadID]
+	if !ok {
+		return ErrNotFound
+	}
+	if rec.State != StateClaim {
+		return ErrInvalidTransition
+	}
+	rec.Result = result
+	rec.State = StateReady
+	return nil
+}
+
 // Transition moves the record for payload_id from from to to, validating the
 // transition. It returns ErrNotFound if no record exists and
 // ErrInvalidTransition if the current state does not match from or the
