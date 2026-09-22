@@ -7,6 +7,7 @@ import (
 
 	"github.com/klrushka/llm-proxy/internal/detection"
 	"github.com/klrushka/llm-proxy/internal/merge"
+	"github.com/klrushka/llm-proxy/internal/policy"
 )
 
 func ent(t detection.Type, start, end int, conf float64, sources ...detection.Source) merge.Entity {
@@ -408,6 +409,212 @@ func TestEmptyAndNilInput(t *testing.T) {
 	if got := Assess("", []merge.Entity{}); got != nil {
 		t.Errorf("Assess(empty) = %+v, want nil", got)
 	}
+}
+
+func TestApplyPolicyAllowsTypeUnchanged(t *testing.T) {
+	text := "Клиент ТЕСТОВ ТЕСТ ТЕСТОВИЧ, паспорт 00 00 000000"
+	nameStart := idx(t, text, "ТЕСТОВ ТЕСТ ТЕСТОВИЧ")
+	passStart := idx(t, text, "00 00 000000")
+	in := []merge.Entity{
+		ent(detection.TypeFullName, nameStart, nameStart+len("ТЕСТОВ ТЕСТ ТЕСТОВИЧ"), 0.95, detection.SourceRubert),
+		ent(detection.TypePassportNumber, passStart, passStart+len("00 00 000000"), 1.0, detection.SourceRegex),
+	}
+	assessed := Assess(text, in)
+	p := policy.NewPolicy("consumer-a", []string{string(detection.TypeFullName), string(detection.TypePassportNumber)})
+
+	got := ApplyPolicy(assessed, p)
+	if len(got) != 2 {
+		t.Fatalf("ApplyPolicy() = %d results, want 2", len(got))
+	}
+	for i := range got {
+		if !got[i].Personal {
+			t.Errorf("entity %s personal = false, want true (type allowed)", got[i].Type)
+		}
+		if hasReason(got[i].ReasonCodes, ReasonTypeDisabledByPolicy) {
+			t.Errorf("entity %s has type_disabled_by_policy, want none", got[i].Type)
+		}
+	}
+	if !reflect.DeepEqual(got, assessed) {
+		t.Errorf("ApplyPolicy(allowed) changed result:\n got %+v\nwant %+v", got, assessed)
+	}
+}
+
+func TestApplyPolicyExcludesType(t *testing.T) {
+	text := "Клиент ТЕСТОВ ТЕСТ ТЕСТОВИЧ, паспорт 00 00 000000"
+	nameStart := idx(t, text, "ТЕСТОВ ТЕСТ ТЕСТОВИЧ")
+	passStart := idx(t, text, "00 00 000000")
+	in := []merge.Entity{
+		ent(detection.TypeFullName, nameStart, nameStart+len("ТЕСТОВ ТЕСТ ТЕСТОВИЧ"), 0.95, detection.SourceRubert),
+		ent(detection.TypePassportNumber, passStart, passStart+len("00 00 000000"), 1.0, detection.SourceRegex),
+	}
+	assessed := Assess(text, in)
+	p := policy.NewPolicy("consumer-a", []string{string(detection.TypeFullName)})
+
+	got := ApplyPolicy(assessed, p)
+	if len(got) != 2 {
+		t.Fatalf("ApplyPolicy() = %d results, want 2", len(got))
+	}
+
+	name := find(t, got, detection.TypeFullName)
+	pass := find(t, got, detection.TypePassportNumber)
+	if !name.Personal {
+		t.Errorf("name personal = false, want true (type allowed)")
+	}
+	if pass.Personal {
+		t.Errorf("passport personal = true, want false (type excluded)")
+	}
+	if !hasReason(pass.ReasonCodes, ReasonTypeDisabledByPolicy) {
+		t.Errorf("passport reasons %v missing type_disabled_by_policy", pass.ReasonCodes)
+	}
+	if hasReason(name.ReasonCodes, ReasonTypeDisabledByPolicy) {
+		t.Errorf("name reasons %v has type_disabled_by_policy, want none", name.ReasonCodes)
+	}
+	if pass.OwnerType != OwnerTypePerson {
+		t.Errorf("passport owner type = %s, want PERSON preserved", pass.OwnerType)
+	}
+	if pass.OwnerID == "" || pass.OwnerID != name.OwnerID {
+		t.Errorf("passport owner id %q != name owner id %q, want preserved shared id", pass.OwnerID, name.OwnerID)
+	}
+	if pass.OwnershipScore != assessed[findIdx(assessed, detection.TypePassportNumber)].OwnershipScore {
+		t.Errorf("passport ownership score changed by policy")
+	}
+}
+
+func TestApplyPolicyMixedEnabledDisabled(t *testing.T) {
+	text := "Иванов Иван Иванович, телефон: +7 900 123-45-67, email: ivanov@example.com"
+	nameStart := idx(t, text, "Иванов Иван Иванович")
+	phoneStart := idx(t, text, "+7 900 123-45-67")
+	emailStart := idx(t, text, "ivanov@example.com")
+	in := []merge.Entity{
+		ent(detection.TypeFullName, nameStart, nameStart+len("Иванов Иван Иванович"), 0.95, detection.SourceRubert),
+		ent(detection.TypePhone, phoneStart, phoneStart+len("+7 900 123-45-67"), 0.9, detection.SourceRegex),
+		ent(detection.TypeEmail, emailStart, emailStart+len("ivanov@example.com"), 0.95, detection.SourceRegex),
+	}
+	assessed := Assess(text, in)
+	p := policy.NewPolicy("consumer-a", []string{string(detection.TypeFullName), string(detection.TypeEmail)})
+
+	got := ApplyPolicy(assessed, p)
+	if len(got) != 3 {
+		t.Fatalf("ApplyPolicy() = %d results, want 3", len(got))
+	}
+	name := find(t, got, detection.TypeFullName)
+	phone := find(t, got, detection.TypePhone)
+	email := find(t, got, detection.TypeEmail)
+	if !name.Personal || !email.Personal {
+		t.Errorf("name/email personal = %v/%v, want true/true", name.Personal, email.Personal)
+	}
+	if phone.Personal {
+		t.Errorf("phone personal = true, want false (type excluded)")
+	}
+	if !hasReason(phone.ReasonCodes, ReasonTypeDisabledByPolicy) {
+		t.Errorf("phone reasons %v missing type_disabled_by_policy", phone.ReasonCodes)
+	}
+	if hasReason(name.ReasonCodes, ReasonTypeDisabledByPolicy) || hasReason(email.ReasonCodes, ReasonTypeDisabledByPolicy) {
+		t.Errorf("allowed entities must not carry type_disabled_by_policy")
+	}
+}
+
+func TestApplyPolicyLeavesNonPersonalUnchanged(t *testing.T) {
+	text := "Александр Пушкин — русский поэт.\nОтделение банка находится по адресу: г. Москва, ул. Тестовая, д. 1\nВстреча состоится в городе Тестовск."
+	poetStart := idx(t, text, "Александр Пушкин")
+	addrStart := idx(t, text, "г. Москва, ул. Тестовая, д. 1")
+	locStart := idx(t, text, "Тестовск")
+	in := []merge.Entity{
+		ent(detection.TypeFullName, poetStart, poetStart+len("Александр Пушкин"), 0.95, detection.SourceRubert),
+		ent(detection.TypeAddress, addrStart, addrStart+len("г. Москва, ул. Тестовая, д. 1"), 0.9, detection.SourceGliner),
+		ent(detection.TypeAddressCity, locStart, locStart+len("Тестовск"), 0.9, detection.SourceGliner),
+	}
+	assessed := Assess(text, in)
+	p := policy.NewPolicy("consumer-a", []string{string(detection.TypeFullName)})
+
+	got := ApplyPolicy(assessed, p)
+	if len(got) != 3 {
+		t.Fatalf("ApplyPolicy() = %d results, want 3", len(got))
+	}
+	for i := range got {
+		if got[i].Personal {
+			t.Errorf("entity %s personal = true, want false (non-personal)", got[i].Type)
+		}
+		if hasReason(got[i].ReasonCodes, ReasonTypeDisabledByPolicy) {
+			t.Errorf("entity %s has type_disabled_by_policy, want none", got[i].Type)
+		}
+	}
+	if !reflect.DeepEqual(got, assessed) {
+		t.Errorf("ApplyPolicy changed non-personal results:\n got %+v\nwant %+v", got, assessed)
+	}
+}
+
+func TestApplyPolicyDeterministicReasonOrder(t *testing.T) {
+	text := "Клиент ТЕСТОВ ТЕСТ ТЕСТОВИЧ, паспорт 00 00 000000"
+	nameStart := idx(t, text, "ТЕСТОВ ТЕСТ ТЕСТОВИЧ")
+	passStart := idx(t, text, "00 00 000000")
+	in := []merge.Entity{
+		ent(detection.TypeFullName, nameStart, nameStart+len("ТЕСТОВ ТЕСТ ТЕСТОВИЧ"), 0.95, detection.SourceRubert),
+		ent(detection.TypePassportNumber, passStart, passStart+len("00 00 000000"), 1.0, detection.SourceRegex),
+	}
+	assessed := Assess(text, in)
+	p := policy.NewPolicy("consumer-a", []string{string(detection.TypeFullName)})
+
+	got := ApplyPolicy(assessed, p)
+	pass := find(t, got, detection.TypePassportNumber)
+	if !isSortedReasons(pass.ReasonCodes) {
+		t.Errorf("passport reasons %v not canonically ordered", pass.ReasonCodes)
+	}
+	if !hasReason(pass.ReasonCodes, ReasonTypeDisabledByPolicy) {
+		t.Errorf("passport reasons %v missing type_disabled_by_policy", pass.ReasonCodes)
+	}
+}
+
+func TestApplyPolicyNoAliasing(t *testing.T) {
+	text := "Клиент ТЕСТОВ ТЕСТ ТЕСТОВИЧ, паспорт 00 00 000000"
+	nameStart := idx(t, text, "ТЕСТОВ ТЕСТ ТЕСТОВИЧ")
+	passStart := idx(t, text, "00 00 000000")
+	src := []detection.Source{detection.SourceRubert, detection.SourceRegex}
+	comp := detection.Candidate{Type: detection.TypeFirstName, Start: nameStart, End: nameStart + 6, Confidence: 0.9, Sources: []detection.Source{detection.SourceRubert}}
+	in := []merge.Entity{
+		{
+			Candidate:  detection.Candidate{Type: detection.TypeFullName, Start: nameStart, End: nameStart + len("ТЕСТОВ ТЕСТ ТЕСТОВИЧ"), Confidence: 0.95, Sources: src},
+			Components: []detection.Candidate{comp},
+		},
+		ent(detection.TypePassportNumber, passStart, passStart+len("00 00 000000"), 1.0, detection.SourceRegex),
+	}
+	assessed := Assess(text, in)
+	orig := make([]Entity, len(assessed))
+	for i, e := range assessed {
+		orig[i] = copyEntityResult(e)
+	}
+	p := policy.NewPolicy("consumer-a", []string{string(detection.TypeFullName)})
+
+	got := ApplyPolicy(assessed, p)
+	if !reflect.DeepEqual(assessed, orig) {
+		t.Errorf("ApplyPolicy() mutated input: got %+v, want %+v", assessed, orig)
+	}
+
+	got[0].Sources[0] = detection.SourceValidator
+	got[0].Components[0].Sources[0] = detection.SourceValidator
+	got[0].ReasonCodes[0] = ReasonAmbiguous
+	if !reflect.DeepEqual(assessed, orig) {
+		t.Errorf("mutating result aliased input: got %+v, want %+v", assessed, orig)
+	}
+}
+
+func TestApplyPolicyEmptyAndNil(t *testing.T) {
+	p := policy.NewPolicy("consumer-a", nil)
+	if got := ApplyPolicy(nil, p); got != nil {
+		t.Errorf("ApplyPolicy(nil) = %+v, want nil", got)
+	}
+	if got := ApplyPolicy([]Entity{}, p); got != nil {
+		t.Errorf("ApplyPolicy(empty) = %+v, want nil", got)
+	}
+}
+
+func findIdx(results []Entity, typ detection.Type) int {
+	for i := range results {
+		if results[i].Type == typ {
+			return i
+		}
+	}
+	return -1
 }
 
 func hasReason(reasons []ReasonCode, want ReasonCode) bool {

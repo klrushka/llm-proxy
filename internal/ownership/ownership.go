@@ -22,6 +22,7 @@ import (
 
 	"github.com/klrushka/llm-proxy/internal/detection"
 	"github.com/klrushka/llm-proxy/internal/merge"
+	"github.com/klrushka/llm-proxy/internal/policy"
 )
 
 // OwnerType is the stable classification of who owns an entity.
@@ -48,6 +49,9 @@ const (
 	ReasonOrganizationContext ReasonCode = "organization_context"
 	ReasonPublicContext       ReasonCode = "public_context"
 	ReasonAmbiguous           ReasonCode = "ambiguous_context"
+	// ReasonTypeDisabledByPolicy explains that a personal entity type is
+	// excluded by the consumer policy and therefore not tokenized.
+	ReasonTypeDisabledByPolicy ReasonCode = "type_disabled_by_policy"
 )
 
 // Entity is one ownership result. It embeds the merged entity unchanged (with
@@ -94,6 +98,7 @@ var reasonOrder = []ReasonCode{
 	ReasonOrganizationContext,
 	ReasonPublicContext,
 	ReasonAmbiguous,
+	ReasonTypeDisabledByPolicy,
 }
 
 // clientMarkers are positive physical-person role markers producing
@@ -190,6 +195,41 @@ func Assess(text string, entities []merge.Entity) []Entity {
 	})
 	assignOwnerIDs(text, results)
 	return results
+}
+
+// ApplyPolicy returns a defensive copy of the Assess results with the consumer
+// policy applied. For each entity Assess classified as personal, if the policy
+// excludes the entity's canonical detection type, Personal is set to false and
+// ReasonTypeDisabledByPolicy is added in deterministic reason order so
+// downstream tokenization skips it. OwnerType, OwnerID and OwnershipScore are
+// preserved; context is not reclassified. Non-personal (organization, public,
+// ambiguous) entities are left unchanged. Caller input and the policy are never
+// mutated or aliased.
+func ApplyPolicy(results []Entity, p policy.Policy) []Entity {
+	if len(results) == 0 {
+		return nil
+	}
+	out := make([]Entity, len(results))
+	for i, e := range results {
+		out[i] = copyEntityResult(e)
+		if !e.Personal {
+			continue
+		}
+		if !p.AllowsType(string(e.Type)) {
+			out[i].Personal = false
+			out[i].ReasonCodes = dedupeSortReasons(append(out[i].ReasonCodes, ReasonTypeDisabledByPolicy))
+		}
+	}
+	return out
+}
+
+// copyEntityResult returns a defensive deep copy of an ownership result with
+// its own Sources, component and reason slices.
+func copyEntityResult(e Entity) Entity {
+	out := e
+	out.Entity = copyEntity(e.Entity)
+	out.ReasonCodes = append([]ReasonCode(nil), e.ReasonCodes...)
+	return out
 }
 
 // decision is the computed ownership classification for one entity.
