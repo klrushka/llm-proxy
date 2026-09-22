@@ -13,15 +13,35 @@ import (
 // error means ready; any error means not ready.
 type ReadyFunc func() error
 
+// Option configures the router.
+type Option func(*options)
+
+type options struct {
+	pii PIIHandlers
+}
+
+// WithPIIHandlers wires the extended /v1/pii/* operations into the router.
+// A zero PIIHandlers value leaves the routes registered but failing closed
+// with 503.
+func WithPIIHandlers(h PIIHandlers) Option {
+	return func(o *options) { o.pii = h }
+}
+
 // NewRouter builds the base router. ready is the injected readiness probe;
 // metrics is the injected metrics handler. A nil ready probe fails closed as
 // not ready. A nil metrics handler leaves the endpoint registered and
-// returns 503 instead of panicking.
-func NewRouter(ready ReadyFunc, metrics http.Handler) *http.ServeMux {
+// returns 503 instead of panicking. Options register the extended /v1/pii/*
+// routes.
+func NewRouter(ready ReadyFunc, metrics http.Handler, opts ...Option) *http.ServeMux {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", handleLive)
 	mux.HandleFunc("GET /health/ready", handleReady(ready))
 	mux.Handle("GET /metrics", handleMetrics(metrics))
+	registerPIIRoutes(mux, o.pii)
 	return mux
 }
 

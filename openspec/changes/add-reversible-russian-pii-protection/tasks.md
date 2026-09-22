@@ -31,7 +31,7 @@
 ## 1. Routers, handlers и state semantics (WS-A)
 
 - [x] 1.1 Реализовать base routing для `/health/live`, `/health/ready`, `/metrics`; observable check: handler contract tests проходят.
-- [ ] 1.2 Реализовать extended `/v1/pii/*` handlers (detect/tokenize/detokenize/scope revoke); observable check: handler contract tests проходят.
+- [x] 1.2 Реализовать extended `/v1/pii/*` handlers (detect/tokenize/detokenize/scope revoke); observable check: handler contract tests проходят.
 - [ ] 1.3 Реализовать `/process` adapter handler с exact contract tests (обязательные строковые `payload`/`payload_id`, успешный ответ ровно с `result`); observable check: contract tests проходят.
 - [ ] 1.4 Реализовать record state machine `claim`/`ready`/`expired` для `payload_id`; observable check: state machine unit tests проходят.
 - [ ] 1.5 Реализовать идемпотентный retry оригинала (повтор исходного payload возвращает ту же маску); observable check: idempotency unit tests проходят.
