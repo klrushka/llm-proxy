@@ -103,6 +103,28 @@ func TestProcessOperationErrorIsSafe(t *testing.T) {
 	}
 }
 
+func TestProcessConflictReturns409GenericBody(t *testing.T) {
+	h := ProcessFunc(func(_ context.Context, _ process.Request) (process.Response, error) {
+		return process.Response{}, process.ErrConflict
+	})
+	mux := NewRouter(nil, nil, WithProcess(h))
+	rec := doJSONRequest(t, mux, http.MethodPost, "/process", `{"payload":"unrelated","payload_id":"p1"}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusConflict)
+	}
+	var errResp errorResponse
+	decodeJSONResponse(t, rec, &errResp)
+	if errResp.Error == "" {
+		t.Errorf("error body missing generic message: %q", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "unrelated") {
+		t.Errorf("body leaks payload: %q", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "result") {
+		t.Errorf("body leaks result field: %q", rec.Body.String())
+	}
+}
+
 func TestProcessWrongMethodReturns405(t *testing.T) {
 	mux := NewRouter(nil, nil)
 	rec := doJSONRequest(t, mux, http.MethodGet, "/process", "")

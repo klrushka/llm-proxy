@@ -13,6 +13,12 @@ type MaskFunc func(ctx context.Context, payload string) (string, error)
 // safe sentinel that never carries the input payload or any plaintext.
 var ErrMaskingFailed = errors.New("process: masking failed")
 
+// ErrConflict is returned when a ready record already exists for a payload_id
+// and the incoming payload matches neither the stored original nor the
+// previously issued result. It is a safe sentinel that never carries the
+// input payload, the stored original, the stored result or any plaintext.
+var ErrConflict = errors.New("process: payload conflicts with existing record")
+
 // Operation implements idempotent masking for POST /process. Its Handle
 // method is signature-compatible with api.ProcessFunc.
 type Operation struct {
@@ -51,6 +57,11 @@ func (o *Operation) Handle(ctx context.Context, req Request) (Response, error) {
 			// Restore by previously issued mask: return the original without
 			// re-masking. Repeatable read; the record stays ready.
 			return Response{Result: rec.Original}, nil
+		default:
+			// Third unrelated payload for an existing ready record: safe
+			// conflict. The record is left unchanged and masking is not
+			// re-invoked.
+			return Response{}, ErrConflict
 		}
 	}
 	return Response{}, ErrInvalidTransition

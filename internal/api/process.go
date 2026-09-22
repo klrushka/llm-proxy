@@ -6,6 +6,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -46,6 +47,11 @@ func handleProcess(fn ProcessFunc) http.HandlerFunc {
 		}
 		resp, err := fn(r.Context(), req)
 		if err != nil {
+			if errors.Is(err, process.ErrConflict) {
+				// Safe conflict: generic body, no payload/result/internal detail.
+				writeJSONError(w, http.StatusConflict, "payload conflicts with existing record")
+				return
+			}
 			writeJSONError(w, http.StatusInternalServerError, "process failed")
 			return
 		}

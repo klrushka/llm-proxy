@@ -194,3 +194,52 @@ func TestOperationRestoreIsRepeatableRead(t *testing.T) {
 		t.Errorf("State = %q, want %q (record stays ready)", after.State, StateReady)
 	}
 }
+
+func TestOperationThirdUnrelatedPayloadConflicts(t *testing.T) {
+	calls := 0
+	op := NewOperation(NewStore(), func(_ context.Context, payload string) (string, error) {
+		calls++
+		return "masked:" + payload, nil
+	})
+
+	first, err := op.Handle(context.Background(), Request{Payload: "synthetic original", PayloadID: "id-1"})
+	if err != nil {
+		t.Fatalf("first Handle() error = %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("mask calls after first = %d, want 1", calls)
+	}
+	before, err := op.store.Get("id-1")
+	if err != nil {
+		t.Fatalf("Get() before conflict error = %v", err)
+	}
+
+	// Third unrelated payload: neither the original nor the issued result.
+	resp, err := op.Handle(context.Background(), Request{Payload: "unrelated third payload", PayloadID: "id-1"})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("Handle() error = %v, want ErrConflict", err)
+	}
+	if resp.Result != "" {
+		t.Errorf("Result = %q, want empty (no plaintext leak)", resp.Result)
+	}
+	if calls != 1 {
+		t.Errorf("mask calls after conflict = %d, want 1 (no re-masking)", calls)
+	}
+
+	after, err := op.store.Get("id-1")
+	if err != nil {
+		t.Fatalf("Get() after conflict error = %v", err)
+	}
+	if before.PayloadID != after.PayloadID ||
+		before.State != after.State ||
+		before.Original != after.Original ||
+		before.Result != after.Result {
+		t.Errorf("record changed after conflict:\nbefore = %+v\nafter  = %+v", before, after)
+	}
+	if after.State != StateReady {
+		t.Errorf("State = %q, want %q (record stays ready)", after.State, StateReady)
+	}
+	if after.Original != "synthetic original" || after.Result != first.Result {
+		t.Errorf("record content changed: original=%q result=%q", after.Original, after.Result)
+	}
+}
