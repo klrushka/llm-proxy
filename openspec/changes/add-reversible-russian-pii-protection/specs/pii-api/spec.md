@@ -5,11 +5,22 @@ Capability определяет HTTP API и audit logging контракт се�
 ## ADDED Requirements
 
 ### Requirement: HTTP endpoints
-Go-сервис SHALL предоставлять `POST /v1/pii/detect`, `POST /v1/pii/tokenize`, `POST /v1/pii/detokenize`, `DELETE /v1/pii/scopes/{scope_id}`, `GET /health/live`, `GET /health/ready`, `POST /process` и `GET /metrics`.
+Go-сервис SHALL предоставлять `POST /v1/pii/detect`, `POST /v1/pii/tokenize`, `POST /v1/pii/detokenize`, `DELETE /v1/pii/scopes/{scope_id}`, `GET /health/live`, `GET /health/ready`, `POST /process`, `POST /v1/runtime/chat` и `GET /metrics`.
 
 #### Scenario: Health endpoints are available
 - **WHEN** клиент вызывает live и ready endpoints
 - **THEN** сервис возвращает состояние процесса и готовность зависимостей без раскрытия конфигурационных секретов
+
+### Requirement: Runtime chat endpoint contract
+`POST /v1/runtime/chat` SHALL принимать JSON с обязательными строковыми полями `text` и `scope_id`; успешный ответ `200` SHALL содержать строковое поле `result` с восстановленным ответом пользователя. Ошибки tokenization/vault/LLM/detokenization SHALL fail closed: ответ `500` с фиксированным безопасным телом без `result`, без исходного текста, без защищённого текста, без токенов, без mappings и без деталей upstream ошибки.
+
+#### Scenario: Runtime chat returns restored result
+- **WHEN** клиент отправляет `POST /v1/runtime/chat` с `text` и `scope_id`
+- **THEN** сервис выполняет mask -> LLM -> demask и возвращает `200` со строковым `result`, содержащим восстановленные значения в модифицированном LLM тексте
+
+#### Scenario: Runtime chat fails closed on any stage error
+- **WHEN** ошибка возникает на этапе tokenization, vault, LLM или detokenization
+- **THEN** сервис возвращает `500` с фиксированным безопасным телом без `result` и без plaintext fallback
 
 ### Requirement: Process benchmark adapter contract
 `POST /process` SHALL принимать JSON с обязательными строковыми полями `payload` и `payload_id`; успешный ответ `200` SHALL содержать строковое поле `result`. Существующие `/v1/pii/*` endpoints сохраняются как отдельный расширенный API и не удаляются.

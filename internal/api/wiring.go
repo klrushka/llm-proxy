@@ -14,6 +14,7 @@ import (
 	"github.com/klrushka/llm-proxy/internal/ownership"
 	"github.com/klrushka/llm-proxy/internal/policy"
 	"github.com/klrushka/llm-proxy/internal/rules"
+	"github.com/klrushka/llm-proxy/internal/runtime"
 	"github.com/klrushka/llm-proxy/internal/tokenization"
 	"github.com/klrushka/llm-proxy/internal/vault"
 )
@@ -50,6 +51,33 @@ func (p *Pipeline) Handlers() PIIHandlers {
 		Detokenize:  p.detokenize,
 		RevokeScope: p.revokeScope,
 	}
+}
+
+// RuntimeCoordinator builds the runtime coordinator backed by the real
+// pipeline and the injected LLM boundary. The protection boundary tokenizes
+// confirmed personal entities through the real detection/ownership pipeline and
+// persists mappings to the real vault; the restoration boundary detokenizes the
+// LLM output in strict mode without rerunning detection. The LLM boundary is
+// the only external boundary in the runtime flow and receives only protected
+// text.
+func (p *Pipeline) RuntimeCoordinator(llm runtime.LLMClient) *runtime.Coordinator {
+	return runtime.New(
+		func(ctx context.Context, scope, text string) (string, error) {
+			res, err := p.tokenize(ctx, TokenizeRequest{Text: text, ScopeID: scope})
+			if err != nil {
+				return "", err
+			}
+			return res.TokenizedText, nil
+		},
+		llm,
+		func(ctx context.Context, scope, protected string) (string, error) {
+			res, err := p.detokenize(ctx, DetokenizeRequest{Text: protected, ScopeID: scope, Mode: ModeStrict})
+			if err != nil {
+				return "", err
+			}
+			return res.RestoredText, nil
+		},
+	)
 }
 
 // detectEntities runs the full detection pipeline and returns ownership

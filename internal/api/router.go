@@ -22,6 +22,7 @@ type Option func(*options)
 type options struct {
 	pii          PIIHandlers
 	process      ProcessFunc
+	runtime      RuntimeFunc
 	metrics      *metrics.Registry
 	processAudit *audit.Logger
 }
@@ -61,6 +62,7 @@ func NewRouter(ready ReadyFunc, metricsHandler http.Handler, opts ...Option) *ht
 	}
 	registerPIIRoutes(mux, o.pii)
 	registerProcessRoute(mux, o.process, o.metrics, o.processAudit)
+	registerRuntimeRoute(mux, o.runtime)
 	return mux
 }
 
