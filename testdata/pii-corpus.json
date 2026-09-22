@@ -1,0 +1,58 @@
+{
+  "version": "1",
+  "offset_unit": "utf8_byte",
+  "cases": [
+    {
+      "id": "positive-full-name-email",
+      "input": "Иванов Иван Иванович, email: ivanov@example.com",
+      "expected_mask": "<FULL_NAME>, email: <EMAIL>",
+      "spans": [
+        {
+          "type": "FULL_NAME",
+          "start": 0,
+          "end": 38,
+          "value": "Иванов Иван Иванович",
+          "personal": true,
+          "mask_token": "<FULL_NAME>"
+        },
+        {
+          "type": "EMAIL",
+          "start": 47,
+          "end": 65,
+          "value": "ivanov@example.com",
+          "personal": true,
+          "mask_token": "<EMAIL>"
+        }
+      ]
+    },
+    {
+      "id": "hard-negative-pushkin",
+      "input": "Пушкин — поэт",
+      "expected_mask": "Пушкин — поэт",
+      "spans": [
+        {
+          "type": "LAST_NAME",
+          "start": 0,
+          "end": 12,
+          "value": "Пушкин",
+          "personal": false
+        }
+      ]
+    },
+    {
+      "id": "positive-phone",
+      "input": "Телефон: +7 900 123-45-67",
+      "expected_mask": "Телефон: <PHONE>",
+      "spans": [
+        {
+          "type": "PHONE",
+          "start": 16,
+          "end": 32,
+          "value": "+7 900 123-45-67",
+          "personal": true,
+          "mask_token": "<PHONE>"
+        }
+      ]
+    }
+  ]
+}
