@@ -13,6 +13,11 @@ type MaskFunc func(ctx context.Context, payload string) (string, error)
 // safe sentinel that never carries the input payload or any plaintext.
 var ErrMaskingFailed = errors.New("process: masking failed")
 
+// ErrVaultUnavailable is returned when the masking dependency reports that
+// the vault is unavailable. It is a safe sentinel that never carries the
+// input payload, the wrapped dependency error, its message or any plaintext.
+var ErrVaultUnavailable = errors.New("process: vault unavailable")
+
 // ErrConflict is returned when a ready record already exists for a payload_id
 // and the incoming payload matches neither the stored original nor the
 // previously issued result. It is a safe sentinel that never carries the
@@ -58,9 +63,12 @@ func (o *Operation) Handle(ctx context.Context, req Request) (Response, error) {
 		// A concurrent first request holds the claim. Wait for it to resolve,
 		// then classify against the resolved record.
 		return o.handleWaiter(ctx, req)
+	case StateExpired:
+		// A later retry that encounters an already-expired record returns the
+		// recorded safe classification. If no classified operation failure was
+		// recorded, preserve the existing invalid-transition behavior.
+		return Response{}, o.store.expiredFailure(req.PayloadID)
 	default:
-		// StateExpired is terminal; direct handling of an already-expired
-		// record is an invalid transition.
 		return Response{}, ErrInvalidTransition
 	}
 }
@@ -80,9 +88,20 @@ func (o *Operation) handleFirst(ctx context.Context, req Request) (Response, err
 	result, err := o.mask(ctx, req.Payload)
 	if err != nil {
 		// Fail closed: never return plaintext or the dependency error (which
-		// may carry the input). Expire the claim safely and wake waiters.
-		_ = o.store.Transition(req.PayloadID, StateClaim, StateExpired)
-		return Response{}, ErrMaskingFailed
+		// may carry the input). Classify the failure to a safe sentinel and
+		// record it on the private store entry so waiters and later retries
+		// observe the same classification. Expire the claim safely and wake
+		// waiters exactly once.
+		failErr := ErrMaskingFailed
+		if errors.Is(err, ErrVaultUnavailable) {
+			failErr = ErrVaultUnavailable
+		}
+		if expireErr := o.store.expireClaim(req.PayloadID, failErr); expireErr != nil {
+			// The claim could not be safely expired; fail closed with an empty
+			// response and the store error rather than leaking the mask error.
+			return Response{}, expireErr
+		}
+		return Response{}, failErr
 	}
 
 	if err := o.store.CompleteClaim(req.PayloadID, result); err != nil {
@@ -94,7 +113,7 @@ func (o *Operation) handleFirst(ctx context.Context, req Request) (Response, err
 // handleWaiter blocks until the in-flight claim for req.PayloadID resolves,
 // then classifies the request against the resolved record. It never invokes
 // the masker. If the winning claim expired because masking failed, it fails
-// closed with ErrMaskingFailed and an empty response.
+// closed with the recorded safe classification and an empty response.
 func (o *Operation) handleWaiter(ctx context.Context, req Request) (Response, error) {
 	rec, err := o.store.WaitReady(ctx, req.PayloadID)
 	if err != nil {
@@ -105,8 +124,8 @@ func (o *Operation) handleWaiter(ctx context.Context, req Request) (Response, er
 		return o.classifyReady(req, rec)
 	case StateExpired:
 		// The winning claim failed closed; expired is terminal and must not be
-		// re-claimed from this call.
-		return Response{}, ErrMaskingFailed
+		// re-claimed from this call. Return the recorded safe classification.
+		return Response{}, o.store.expiredFailure(req.PayloadID)
 	default:
 		return Response{}, ErrInvalidTransition
 	}

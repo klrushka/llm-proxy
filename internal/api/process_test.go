@@ -164,6 +164,36 @@ func TestProcessOverloadReturns429WithRetryAfter(t *testing.T) {
 	}
 }
 
+func TestProcessVaultUnavailableReturns503NoResult(t *testing.T) {
+	const payload = "unique-synthetic-vault-payload"
+	h := ProcessFunc(func(_ context.Context, _ process.Request) (process.Response, error) {
+		return process.Response{}, fmt.Errorf("sensitive vault detail: %w", process.ErrVaultUnavailable)
+	})
+	mux := NewRouter(nil, nil, WithProcess(h))
+	rec := doJSONRequest(t, mux, http.MethodPost, "/process",
+		`{"payload":"`+payload+`","payload_id":"p1"}`)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+	var errResp errorResponse
+	decodeJSONResponse(t, rec, &errResp)
+	if errResp.Error == "" {
+		t.Errorf("error body missing generic message: %q", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "result") {
+		t.Errorf("body leaks result field: %q", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), payload) {
+		t.Errorf("body leaks request payload: %q", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "sensitive vault detail") {
+		t.Errorf("body leaks internal detail: %q", rec.Body.String())
+	}
+	if got := rec.Header().Get("Retry-After"); got != "" {
+		t.Errorf("Retry-After = %q, want absent (distinct from overload)", got)
+	}
+}
+
 func TestProcessRetryAfterAbsentOnNonOverload(t *testing.T) {
 	cases := []struct {
 		name string
@@ -176,6 +206,9 @@ func TestProcessRetryAfterAbsentOnNonOverload(t *testing.T) {
 		{"conflict", func(_ context.Context, _ process.Request) (process.Response, error) {
 			return process.Response{}, process.ErrConflict
 		}, http.StatusConflict},
+		{"vault unavailable", func(_ context.Context, _ process.Request) (process.Response, error) {
+			return process.Response{}, process.ErrVaultUnavailable
+		}, http.StatusServiceUnavailable},
 		{"generic", func(_ context.Context, _ process.Request) (process.Response, error) {
 			return process.Response{}, errors.New("boom")
 		}, http.StatusInternalServerError},

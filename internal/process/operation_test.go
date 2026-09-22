@@ -3,6 +3,7 @@ package process
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -114,6 +115,183 @@ func TestOperationMaskingErrorFailsClosed(t *testing.T) {
 	}
 	if rec.Result != "" {
 		t.Errorf("Result = %q, want empty", rec.Result)
+	}
+}
+
+func TestOperationVaultUnavailableFailsClosed(t *testing.T) {
+	const payload = "synthetic text"
+	op := NewOperation(NewStore(), func(_ context.Context, _ string) (string, error) {
+		return "", fmt.Errorf("vault down: %w", ErrVaultUnavailable)
+	})
+
+	resp, err := op.Handle(context.Background(), Request{Payload: payload, PayloadID: "id-1"})
+	if !errors.Is(err, ErrVaultUnavailable) {
+		t.Fatalf("Handle() error = %v, want ErrVaultUnavailable", err)
+	}
+	if errors.Is(err, ErrMaskingFailed) {
+		t.Errorf("Handle() error = %v, must not be ErrMaskingFailed", err)
+	}
+	if err != nil && strings.Contains(err.Error(), "vault down") {
+		t.Errorf("returned error leaks dependency detail: %q", err.Error())
+	}
+	if err != nil && strings.Contains(err.Error(), payload) {
+		t.Errorf("returned error leaks payload: %q", err.Error())
+	}
+	if resp.Result != "" {
+		t.Errorf("Result = %q, want empty (no plaintext leak)", resp.Result)
+	}
+
+	rec, err := op.store.Get("id-1")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if rec.State != StateExpired {
+		t.Errorf("State = %q, want %q (claim safely terminated)", rec.State, StateExpired)
+	}
+	if rec.Result != "" {
+		t.Errorf("Result = %q, want empty", rec.Result)
+	}
+}
+
+func TestOperationVaultUnavailableOwnerAndWaiterAgree(t *testing.T) {
+	const payloadID = "id-1"
+	var calls atomic.Int64
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	op := NewOperation(NewStore(), func(_ context.Context, p string) (string, error) {
+		calls.Add(1)
+		close(entered)
+		<-release
+		return "", fmt.Errorf("vault down: %w", ErrVaultUnavailable)
+	})
+
+	ownerDone := make(chan struct{})
+	var ownerResp Response
+	var ownerErr error
+	go func() {
+		ownerResp, ownerErr = op.Handle(context.Background(), Request{Payload: "synthetic payload", PayloadID: payloadID})
+		close(ownerDone)
+	}()
+	<-entered
+
+	waiterInWait := make(chan struct{})
+	waiterDone := make(chan struct{})
+	var waiterResp Response
+	var waiterErr error
+	go func() {
+		waiterResp, waiterErr = op.Handle(&signalCtx{Context: context.Background(), done: waiterInWait}, Request{Payload: "synthetic payload", PayloadID: payloadID})
+		close(waiterDone)
+	}()
+	<-waiterInWait
+
+	close(release)
+	<-ownerDone
+	<-waiterDone
+
+	if got := calls.Load(); got != 1 {
+		t.Errorf("mask calls = %d, want 1", got)
+	}
+	if !errors.Is(ownerErr, ErrVaultUnavailable) {
+		t.Errorf("owner error = %v, want ErrVaultUnavailable", ownerErr)
+	}
+	if ownerResp.Result != "" {
+		t.Errorf("owner result = %q, want empty (fail closed)", ownerResp.Result)
+	}
+	if !errors.Is(waiterErr, ErrVaultUnavailable) {
+		t.Errorf("waiter error = %v, want ErrVaultUnavailable", waiterErr)
+	}
+	if waiterResp.Result != "" {
+		t.Errorf("waiter result = %q, want empty (fail closed)", waiterResp.Result)
+	}
+
+	rec, err := op.store.Get(payloadID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if rec.State != StateExpired {
+		t.Errorf("record State = %q, want %q", rec.State, StateExpired)
+	}
+	if rec.Result != "" {
+		t.Errorf("record Result = %q, want empty", rec.Result)
+	}
+}
+
+func TestOperationVaultUnavailableLaterRetryObservesSame(t *testing.T) {
+	const payload = "synthetic text"
+	const payloadID = "id-1"
+	var calls atomic.Int64
+	op := NewOperation(NewStore(), func(_ context.Context, _ string) (string, error) {
+		calls.Add(1)
+		return "", fmt.Errorf("vault down: %w", ErrVaultUnavailable)
+	})
+
+	first, err := op.Handle(context.Background(), Request{Payload: payload, PayloadID: payloadID})
+	if !errors.Is(err, ErrVaultUnavailable) {
+		t.Fatalf("first Handle() error = %v, want ErrVaultUnavailable", err)
+	}
+	if first.Result != "" {
+		t.Errorf("first Result = %q, want empty", first.Result)
+	}
+
+	retry, err := op.Handle(context.Background(), Request{Payload: payload, PayloadID: payloadID})
+	if !errors.Is(err, ErrVaultUnavailable) {
+		t.Errorf("retry Handle() error = %v, want ErrVaultUnavailable", err)
+	}
+	if retry.Result != "" {
+		t.Errorf("retry Result = %q, want empty", retry.Result)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("mask calls = %d, want 1 (no re-masking on retry)", got)
+	}
+}
+
+func TestOperationGenericMaskingErrorOwnerAndWaiterStayMaskingFailed(t *testing.T) {
+	const payloadID = "id-1"
+	var calls atomic.Int64
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	op := NewOperation(NewStore(), func(_ context.Context, p string) (string, error) {
+		calls.Add(1)
+		close(entered)
+		<-release
+		return "", errors.New("masking failed: " + p)
+	})
+
+	ownerDone := make(chan struct{})
+	var ownerErr error
+	go func() {
+		_, ownerErr = op.Handle(context.Background(), Request{Payload: "synthetic payload", PayloadID: payloadID})
+		close(ownerDone)
+	}()
+	<-entered
+
+	waiterInWait := make(chan struct{})
+	waiterDone := make(chan struct{})
+	var waiterErr error
+	go func() {
+		_, waiterErr = op.Handle(&signalCtx{Context: context.Background(), done: waiterInWait}, Request{Payload: "synthetic payload", PayloadID: payloadID})
+		close(waiterDone)
+	}()
+	<-waiterInWait
+
+	close(release)
+	<-ownerDone
+	<-waiterDone
+
+	if got := calls.Load(); got != 1 {
+		t.Errorf("mask calls = %d, want 1", got)
+	}
+	if !errors.Is(ownerErr, ErrMaskingFailed) {
+		t.Errorf("owner error = %v, want ErrMaskingFailed", ownerErr)
+	}
+	if errors.Is(ownerErr, ErrVaultUnavailable) {
+		t.Errorf("owner error = %v, must not be ErrVaultUnavailable", ownerErr)
+	}
+	if !errors.Is(waiterErr, ErrMaskingFailed) {
+		t.Errorf("waiter error = %v, want ErrMaskingFailed", waiterErr)
+	}
+	if errors.Is(waiterErr, ErrVaultUnavailable) {
+		t.Errorf("waiter error = %v, must not be ErrVaultUnavailable", waiterErr)
 	}
 }
 

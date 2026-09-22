@@ -3,6 +3,8 @@ package process
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -391,5 +393,109 @@ func TestWaitReadySnapshotDetached(t *testing.T) {
 	}
 	if stored.State != StateReady || stored.Original != "synthetic original" || stored.Result != "masked result" {
 		t.Errorf("stored record changed by snapshot mutation: %+v", stored)
+	}
+}
+
+func TestExpireClaimRecordsVaultUnavailable(t *testing.T) {
+	s := NewStore()
+	if _, err := s.CreateClaim("id-1", "synthetic original"); err != nil {
+		t.Fatalf("CreateClaim() error = %v", err)
+	}
+	if err := s.expireClaim("id-1", ErrVaultUnavailable); err != nil {
+		t.Fatalf("expireClaim() error = %v", err)
+	}
+	if err := s.expiredFailure("id-1"); !errors.Is(err, ErrVaultUnavailable) {
+		t.Errorf("expiredFailure() = %v, want ErrVaultUnavailable", err)
+	}
+	rec, err := s.Get("id-1")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if rec.State != StateExpired {
+		t.Errorf("State = %q, want %q", rec.State, StateExpired)
+	}
+	if rec.Result != "" {
+		t.Errorf("Result = %q, want empty (classification not in public Record)", rec.Result)
+	}
+}
+
+func TestExpireClaimStoresExactSentinelNotWrapper(t *testing.T) {
+	const sensitive = "unique-sensitive-vault-detail"
+	s := NewStore()
+	if _, err := s.CreateClaim("id-1", "synthetic original"); err != nil {
+		t.Fatalf("CreateClaim() error = %v", err)
+	}
+	wrapped := fmt.Errorf("%s: %w", sensitive, ErrVaultUnavailable)
+	if err := s.expireClaim("id-1", wrapped); err != nil {
+		t.Fatalf("expireClaim() error = %v", err)
+	}
+	got := s.expiredFailure("id-1")
+	if got != ErrVaultUnavailable {
+		t.Errorf("expiredFailure() = %v, want exact ErrVaultUnavailable by identity", got)
+	}
+	if !errors.Is(got, ErrVaultUnavailable) {
+		t.Errorf("expiredFailure() = %v, want errors.Is ErrVaultUnavailable", got)
+	}
+	if strings.Contains(got.Error(), sensitive) {
+		t.Errorf("expiredFailure() error leaks sensitive detail: %q", got.Error())
+	}
+	if strings.Contains(got.Error(), "unique-sensitive") {
+		t.Errorf("expiredFailure() error leaks wrapper message: %q", got.Error())
+	}
+}
+
+func TestExpireClaimNormalizesUnknownError(t *testing.T) {
+	s := NewStore()
+	if _, err := s.CreateClaim("id-1", "synthetic original"); err != nil {
+		t.Fatalf("CreateClaim() error = %v", err)
+	}
+	if err := s.expireClaim("id-1", errors.New("raw dependency detail")); err != nil {
+		t.Fatalf("expireClaim() error = %v", err)
+	}
+	got := s.expiredFailure("id-1")
+	if got != ErrMaskingFailed {
+		t.Errorf("expiredFailure() = %v, want exact ErrMaskingFailed by identity", got)
+	}
+	if !errors.Is(got, ErrMaskingFailed) {
+		t.Errorf("expiredFailure() = %v, want errors.Is ErrMaskingFailed", got)
+	}
+	if errors.Is(got, ErrVaultUnavailable) {
+		t.Errorf("expiredFailure() must not be ErrVaultUnavailable for unknown error")
+	}
+	if strings.Contains(got.Error(), "raw dependency detail") {
+		t.Errorf("expiredFailure() error leaks raw detail: %q", got.Error())
+	}
+}
+
+func TestExpireClaimNotInClaimState(t *testing.T) {
+	s := NewStore()
+	if _, err := s.CreateClaim("id-1", "synthetic original"); err != nil {
+		t.Fatalf("CreateClaim() error = %v", err)
+	}
+	if err := s.CompleteClaim("id-1", "masked result"); err != nil {
+		t.Fatalf("CompleteClaim() error = %v", err)
+	}
+	if err := s.expireClaim("id-1", ErrVaultUnavailable); !errors.Is(err, ErrInvalidTransition) {
+		t.Errorf("expireClaim() error = %v, want ErrInvalidTransition", err)
+	}
+}
+
+func TestExpiredFailureNoneRecorded(t *testing.T) {
+	s := NewStore()
+	if _, err := s.CreateClaim("id-1", "synthetic original"); err != nil {
+		t.Fatalf("CreateClaim() error = %v", err)
+	}
+	if err := s.Transition("id-1", StateClaim, StateExpired); err != nil {
+		t.Fatalf("Transition(claim->expired) error = %v", err)
+	}
+	if err := s.expiredFailure("id-1"); !errors.Is(err, ErrInvalidTransition) {
+		t.Errorf("expiredFailure() = %v, want ErrInvalidTransition", err)
+	}
+}
+
+func TestExpiredFailureNotFound(t *testing.T) {
+	s := NewStore()
+	if err := s.expiredFailure("missing"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("expiredFailure() error = %v, want ErrNotFound", err)
 	}
 }

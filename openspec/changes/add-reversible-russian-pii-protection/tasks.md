@@ -43,7 +43,7 @@
 
 - [x] 2.1 Реализовать bounded concurrency и backpressure; observable check: load unit tests проходят.
 - [x] 2.2 Реализовать `429` с `Retry-After` при перегрузке; observable check: overload handler tests проходят.
-- [ ] 2.3 Реализовать fail closed `503` без `result` при недоступности vault; observable check: failure injection test проходят.
+- [x] 2.3 Реализовать fail closed `503` без `result` при недоступности vault; observable check: failure injection test проходят.
 - [ ] 2.4 Реализовать rules-only degraded mode только при явном разрешении consumer policy, иначе `503`; observable check: degradation unit tests проходят.
 
 ## 3. Consumer policy (WS-A)

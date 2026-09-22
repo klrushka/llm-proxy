@@ -49,10 +49,13 @@ type Store struct {
 // entry is the private per-payload_id store entry. It pairs the domain Record
 // with a done channel used to coordinate concurrent first requests. The done
 // channel is closed exactly once when the record leaves StateClaim (to ready
-// or expired), waking any waiters. It is never exposed through Record.
+// or expired), waking any waiters. It is never exposed through Record. failErr
+// holds the safe classification of a failed claim so waiters and later retries
+// observe the same terminal failure; it is never exposed through Record.
 type entry struct {
-	rec  *Record
-	done chan struct{}
+	rec     *Record
+	done    chan struct{}
+	failErr error
 }
 
 // NewStore returns an empty Store.
@@ -181,4 +184,48 @@ func (s *Store) Transition(payloadID string, from, to RecordState) error {
 		close(e.done)
 	}
 	return nil
+}
+
+// expireClaim atomically records a safe failure classification on a claim
+// record, transitions it to expired, and wakes any waiters exactly once. It
+// returns ErrNotFound if no record exists and ErrInvalidTransition if the
+// record is not in claim state. The stored value is always exactly
+// ErrVaultUnavailable or exactly ErrMaskingFailed, never the caller-provided
+// error object, so raw dependency errors and their messages are never
+// retained.
+func (s *Store) expireClaim(payloadID string, failErr error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.records[payloadID]
+	if !ok {
+		return ErrNotFound
+	}
+	if e.rec.State != StateClaim {
+		return ErrInvalidTransition
+	}
+	if errors.Is(failErr, ErrVaultUnavailable) {
+		e.failErr = ErrVaultUnavailable
+	} else {
+		e.failErr = ErrMaskingFailed
+	}
+	e.rec.State = StateExpired
+	close(e.done)
+	return nil
+}
+
+// expiredFailure returns the safe classification recorded when a claim was
+// expired by expireClaim. It returns ErrInvalidTransition if no classified
+// operation failure was recorded for the record. It returns ErrNotFound if no
+// record exists.
+func (s *Store) expiredFailure(payloadID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.records[payloadID]
+	if !ok {
+		return ErrNotFound
+	}
+	if e.failErr == nil {
+		return ErrInvalidTransition
+	}
+	return e.failErr
 }
