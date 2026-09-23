@@ -42,6 +42,142 @@ func TestClassifyBirthAndIssueDates(t *testing.T) {
 	}
 }
 
+func TestClassifyBirthDateViaRodilsya(t *testing.T) {
+	for _, phrase := range []string{"родился", "родилась"} {
+		text := phrase + " 01.02.1990"
+		s, e := spanOf(t, text, "01.02.1990")
+		in := []detection.Candidate{cand(typeDate, s, e, 0.9, detection.SourceGliner)}
+		want := []detection.Candidate{cand(detection.TypeBirthDate, s, e, 0.9, detection.SourceGliner)}
+		if got := Classify(text, in); !reflect.DeepEqual(got, want) {
+			t.Errorf("Classify(%q) = %+v, want %+v", text, got, want)
+		}
+	}
+}
+
+func TestClassifyIssueDateViaBareVydanWithPassportContext(t *testing.T) {
+	// "паспорт" and "выдан" are separated by "был", so only the bare "выдан"
+	// phrase applies, and it is confirmed by the local passport context.
+	text := "паспорт был выдан 03.04.2020"
+	s, e := spanOf(t, text, "03.04.2020")
+	in := []detection.Candidate{cand(typeDate, s, e, 0.9, detection.SourceRubert)}
+	want := []detection.Candidate{cand(detection.TypePassportIssueDate, s, e, 0.9, detection.SourceRubert)}
+	if got := Classify(text, in); !reflect.DeepEqual(got, want) {
+		t.Errorf("Classify() = %+v, want %+v", got, want)
+	}
+}
+
+func TestClassifyBareVydanWithoutPassportContextDropped(t *testing.T) {
+	text := "документ выдан 03.04.2020"
+	s, e := spanOf(t, text, "03.04.2020")
+	in := []detection.Candidate{cand(typeDate, s, e, 0.9, detection.SourceRubert)}
+	if got := Classify(text, in); len(got) != 0 {
+		t.Errorf("Classify() = %+v, want empty (bare выдан without passport context)", got)
+	}
+}
+
+func TestClassifyBareVydanPassportOnOtherLineDropped(t *testing.T) {
+	// The passport context is on a previous line; the bounded local region
+	// never crosses a newline, so the bare "выдан" is not confirmed.
+	text := "паспорт\nвыдан 03.04.2020"
+	s, e := spanOf(t, text, "03.04.2020")
+	in := []detection.Candidate{cand(typeDate, s, e, 0.9, detection.SourceRubert)}
+	if got := Classify(text, in); len(got) != 0 {
+		t.Errorf("Classify() = %+v, want empty (passport context on other line)", got)
+	}
+}
+
+func TestClassifyBareVydanPassportInOtherClauseDropped(t *testing.T) {
+	// The passport marker is in a different clause separated by ";"; the bare
+	// "выдан" must not cross the clause boundary.
+	text := "паспорт утерян; диплом выдан 03.04.2020"
+	s, e := spanOf(t, text, "03.04.2020")
+	in := []detection.Candidate{cand(typeDate, s, e, 0.9, detection.SourceRubert)}
+	if got := Classify(text, in); len(got) != 0 {
+		t.Errorf("Classify() = %+v, want empty (passport context in other clause)", got)
+	}
+}
+
+func TestClassifyBareVydanNegatedDropped(t *testing.T) {
+	text := "паспорт не выдан 03.04.2020"
+	s, e := spanOf(t, text, "03.04.2020")
+	in := []detection.Candidate{cand(typeDate, s, e, 0.9, detection.SourceRubert)}
+	if got := Classify(text, in); len(got) != 0 {
+		t.Errorf("Classify() = %+v, want empty (negated выдан)", got)
+	}
+}
+
+func TestClassifyNegatedContextPhrasesDropped(t *testing.T) {
+	tests := []struct {
+		text string
+		sub  string
+		typ  detection.Type
+	}{
+		{"не родился 01.02.1990", "01.02.1990", typeDate},
+		{"не родилась 01.02.1990", "01.02.1990", typeDate},
+		{"не родился в Москве", "Москве", typeLocation},
+		{"не проживает в Москве", "Москве", typeLocation},
+		{"не зарегистрирован в Москве", "Москве", typeLocation},
+	}
+	for _, tt := range tests {
+		s, e := spanOf(t, tt.text, tt.sub)
+		in := []detection.Candidate{cand(tt.typ, s, e, 0.9, detection.SourceRubert)}
+		if got := Classify(tt.text, in); len(got) != 0 {
+			t.Errorf("Classify(%q) = %+v, want empty (negated context)", tt.text, got)
+		}
+	}
+}
+
+func TestClassifyAuxiliaryNegationDropped(t *testing.T) {
+	tests := []struct {
+		text string
+		sub  string
+		typ  detection.Type
+	}{
+		{"паспорт не был выдан 03.04.2020", "03.04.2020", typeDate},
+		{"никогда не был зарегистрирован в Москве", "Москве", typeLocation},
+	}
+	for _, tt := range tests {
+		s, e := spanOf(t, tt.text, tt.sub)
+		in := []detection.Candidate{cand(tt.typ, s, e, 0.9, detection.SourceRubert)}
+		if got := Classify(tt.text, in); len(got) != 0 {
+			t.Errorf("Classify(%q) = %+v, want empty (auxiliary-negated context)", tt.text, got)
+		}
+	}
+}
+
+func TestClassifyNegationInEarlierClauseDoesNotSuppressLaterPositive(t *testing.T) {
+	text := "не родился 01.02.1990; дата рождения 05.05.2025"
+	s, e := spanOf(t, text, "05.05.2025")
+	in := []detection.Candidate{cand(typeDate, s, e, 0.9, detection.SourceRubert)}
+	want := []detection.Candidate{cand(detection.TypeBirthDate, s, e, 0.9, detection.SourceRubert)}
+	if got := Classify(text, in); !reflect.DeepEqual(got, want) {
+		t.Errorf("Classify() = %+v, want %+v (negation must not cross clause)", got, want)
+	}
+}
+
+func TestClassifyPositiveContextNotNegated(t *testing.T) {
+	tests := []struct {
+		text string
+		sub  string
+		typ  detection.Type
+		want detection.Type
+	}{
+		{"родился 01.02.1990", "01.02.1990", typeDate, detection.TypeBirthDate},
+		{"родилась 01.02.1990", "01.02.1990", typeDate, detection.TypeBirthDate},
+		{"родился в Москве", "Москве", typeLocation, detection.TypeBirthPlace},
+		{"проживает в Москве", "Москве", typeLocation, detection.TypeAddress},
+		{"зарегистрирован в Москве", "Москве", typeLocation, detection.TypeAddress},
+	}
+	for _, tt := range tests {
+		s, e := spanOf(t, tt.text, tt.sub)
+		in := []detection.Candidate{cand(tt.typ, s, e, 0.9, detection.SourceRubert)}
+		want := []detection.Candidate{cand(tt.want, s, e, 0.9, detection.SourceRubert)}
+		if got := Classify(tt.text, in); !reflect.DeepEqual(got, want) {
+			t.Errorf("Classify(%q) = %+v, want %+v", tt.text, got, want)
+		}
+	}
+}
+
 func TestClassifyPassportIssueDateViaVydachi(t *testing.T) {
 	text := "дата выдачи 03.04.2020"
 	s, e := spanOf(t, text, "03.04.2020")
@@ -79,6 +215,85 @@ func TestClassifyLocationAddressContext(t *testing.T) {
 	want := []detection.Candidate{cand(detection.TypeAddress, s, e, 0.9, detection.SourceRubert)}
 	if got := Classify(text, in); !reflect.DeepEqual(got, want) {
 		t.Errorf("Classify() = %+v, want %+v", got, want)
+	}
+}
+
+func TestClassifyBirthPlaceViaRodilsyaV(t *testing.T) {
+	for _, phrase := range []string{"родился в", "родилась в"} {
+		text := phrase + " городе Тестовск"
+		s, e := spanOf(t, text, "Тестовск")
+		in := []detection.Candidate{cand(typeLocation, s, e, 0.9, detection.SourceGliner)}
+		want := []detection.Candidate{cand(detection.TypeBirthPlace, s, e, 0.9, detection.SourceGliner)}
+		if got := Classify(text, in); !reflect.DeepEqual(got, want) {
+			t.Errorf("Classify(%q) = %+v, want %+v", text, got, want)
+		}
+	}
+}
+
+func TestClassifyAddressBlockViaProzhivaet(t *testing.T) {
+	text := "проживает в Москве, ул. Ленина, д. 5"
+	cityS, cityE := spanOf(t, text, "Москве")
+	streetS, streetE := spanOf(t, text, "Ленина")
+	houseS, houseE := spanOf(t, text, "5")
+
+	in := []detection.Candidate{
+		cand(detection.TypeAddressCity, cityS, cityE, 0.9, detection.SourceRubert),
+		cand(detection.TypeAddressStreet, streetS, streetE, 0.9, detection.SourceRubert),
+		cand(detection.TypeAddressHouse, houseS, houseE, 0.9, detection.SourceRubert),
+	}
+	want := []detection.Candidate{
+		cand(detection.TypeAddressCity, cityS, cityE, 0.9, detection.SourceRubert),
+		cand(detection.TypeAddress, cityS, houseE, 0.9, detection.SourceRubert),
+		cand(detection.TypeAddressStreet, streetS, streetE, 0.9, detection.SourceRubert),
+		cand(detection.TypeAddressHouse, houseS, houseE, 0.9, detection.SourceRubert),
+	}
+	if got := Classify(text, in); !reflect.DeepEqual(got, want) {
+		t.Errorf("Classify() = %+v, want %+v", got, want)
+	}
+}
+
+func TestClassifyAddressBlockViaZaregistrirovan(t *testing.T) {
+	text := "зарегистрирован в Москве, ул. Ленина, д. 5"
+	cityS, cityE := spanOf(t, text, "Москве")
+	streetS, streetE := spanOf(t, text, "Ленина")
+	houseS, houseE := spanOf(t, text, "5")
+
+	in := []detection.Candidate{
+		cand(detection.TypeAddressCity, cityS, cityE, 0.9, detection.SourceRubert),
+		cand(detection.TypeAddressStreet, streetS, streetE, 0.9, detection.SourceRubert),
+		cand(detection.TypeAddressHouse, houseS, houseE, 0.9, detection.SourceRubert),
+	}
+	want := []detection.Candidate{
+		cand(detection.TypeAddressCity, cityS, cityE, 0.9, detection.SourceRubert),
+		cand(detection.TypeAddress, cityS, houseE, 0.9, detection.SourceRubert),
+		cand(detection.TypeAddressStreet, streetS, streetE, 0.9, detection.SourceRubert),
+		cand(detection.TypeAddressHouse, houseS, houseE, 0.9, detection.SourceRubert),
+	}
+	if got := Classify(text, in); !reflect.DeepEqual(got, want) {
+		t.Errorf("Classify() = %+v, want %+v", got, want)
+	}
+}
+
+func TestClassifyNegatedAddressBlockNotBuilt(t *testing.T) {
+	for _, phrase := range []string{"не проживает", "не зарегистрирован"} {
+		text := phrase + " в Москве, ул. Ленина, д. 5"
+		cityS, cityE := spanOf(t, text, "Москве")
+		streetS, streetE := spanOf(t, text, "Ленина")
+		houseS, houseE := spanOf(t, text, "5")
+
+		in := []detection.Candidate{
+			cand(detection.TypeAddressCity, cityS, cityE, 0.9, detection.SourceRubert),
+			cand(detection.TypeAddressStreet, streetS, streetE, 0.9, detection.SourceRubert),
+			cand(detection.TypeAddressHouse, houseS, houseE, 0.9, detection.SourceRubert),
+		}
+		want := []detection.Candidate{
+			cand(detection.TypeAddressCity, cityS, cityE, 0.9, detection.SourceRubert),
+			cand(detection.TypeAddressStreet, streetS, streetE, 0.9, detection.SourceRubert),
+			cand(detection.TypeAddressHouse, houseS, houseE, 0.9, detection.SourceRubert),
+		}
+		if got := Classify(text, in); !reflect.DeepEqual(got, want) {
+			t.Errorf("Classify(%q) = %+v, want %+v (no ADDRESS block)", text, got, want)
+		}
 	}
 }
 

@@ -29,13 +29,19 @@ const contextWindow = 40
 const addressContextWindow = 60
 
 // dateContexts maps a DATE context phrase to the canonical type it promotes to.
+// passportContext marks phrases that additionally require a confirmed local
+// passport context word before they apply.
 var dateContexts = []struct {
-	phrase string
-	typ    detection.Type
+	phrase          string
+	typ             detection.Type
+	passportContext bool
 }{
-	{"дата рождения", detection.TypeBirthDate},
-	{"дата выдачи", detection.TypePassportIssueDate},
-	{"паспорт выдан", detection.TypePassportIssueDate},
+	{"дата рождения", detection.TypeBirthDate, false},
+	{"родился", detection.TypeBirthDate, false},
+	{"родилась", detection.TypeBirthDate, false},
+	{"дата выдачи", detection.TypePassportIssueDate, false},
+	{"паспорт выдан", detection.TypePassportIssueDate, false},
+	{"выдан", detection.TypePassportIssueDate, true},
 }
 
 // locationContexts maps a LOCATION context phrase to the canonical type it
@@ -45,9 +51,32 @@ var locationContexts = []struct {
 	typ    detection.Type
 }{
 	{"место рождения", detection.TypeBirthPlace},
+	{"родился в", detection.TypeBirthPlace},
+	{"родилась в", detection.TypeBirthPlace},
 	{"адрес регистрации", detection.TypeAddress},
 	{"адрес проживания", detection.TypeAddress},
 	{"адрес", detection.TypeAddress},
+	{"проживает", detection.TypeAddress},
+	{"зарегистрирован", detection.TypeAddress},
+}
+
+// passportContextWords are the local context words that confirm a passport
+// context for the bare "выдан" DATE phrase.
+var passportContextWords = []string{"паспорт"}
+
+// negationWords are the words that negate a context phrase.
+var negationWords = map[string]bool{"не": true, "никогда": true}
+
+// auxiliaryVerbs are the auxiliary verbs allowed between a negation word and a
+// negated phrase (e.g. "не был выдан", "никогда не был зарегистрирован").
+var auxiliaryVerbs = map[string]bool{
+	"был": true, "была": true, "были": true, "было": true, "быть": true,
+}
+
+// clauseSeparators are the characters that end a clause for the passport
+// context check.
+func isClauseSeparator(b byte) bool {
+	return b == ';' || b == '.' || b == '!' || b == '?' || b == '\n'
 }
 
 // addressContextPhrases are the explicit address context phrases that qualify
@@ -56,16 +85,19 @@ var addressContextPhrases = []string{
 	"адрес регистрации",
 	"адрес проживания",
 	"адрес",
+	"проживает",
+	"зарегистрирован",
 }
 
 // connectiveWords are the address marker words allowed between a qualifying
 // context phrase and the candidate value.
 var connectiveWords = map[string]bool{
-	"г": true, "город": true, "ул": true, "улица": true,
+	"г": true, "город": true, "городе": true, "города": true,
+	"ул": true, "улица": true,
 	"проспект": true, "пр-т": true, "д": true, "дом": true,
 	"корп": true, "корпус": true, "стр": true, "строение": true,
 	"кв": true, "квартира": true, "область": true, "край": true,
-	"республика": true, "индекс": true,
+	"республика": true, "индекс": true, "в": true,
 }
 
 // canonicalSourceOrder is the deterministic order used for source unions.
@@ -142,14 +174,39 @@ func isRuneBoundary(text string, p int) bool {
 }
 
 // classifyDate promotes a DATE candidate when a qualifying date context phrase
-// applies within the bounded local region before it.
+// applies within the bounded local region before it. Phrases marked with a
+// passport-context requirement additionally need a confirmed local passport
+// context word in the same clause.
 func classifyDate(text string, c detection.Candidate) (detection.Type, bool) {
 	for _, ctx := range dateContexts {
-		if contextApplies(text, c.Start, ctx.phrase) {
+		if ctx.passportContext {
+			if !contextAppliesInClause(text, c.Start, ctx.phrase, contextWindow) {
+				continue
+			}
+			if !passportContextIn(text, c.Start) {
+				continue
+			}
 			return ctx.typ, true
 		}
+		if !contextApplies(text, c.Start, ctx.phrase) {
+			continue
+		}
+		return ctx.typ, true
 	}
 	return "", false
+}
+
+// passportContextIn reports whether a passport context word appears within the
+// bounded local region before start in the same clause.
+func passportContextIn(text string, start int) bool {
+	region := clauseRegionIn(text, start, contextWindow)
+	lower := strings.ToLower(region)
+	for _, w := range passportContextWords {
+		if lastPhraseIndex(lower, w) >= 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // classifyLocation promotes a LOCATION candidate when a qualifying location
@@ -171,16 +228,81 @@ func contextApplies(text string, start int, phrase string) bool {
 
 // contextAppliesIn is contextApplies with an explicit window. Both phrase
 // matching and connective checking run on a single lowercased region so indexes
-// stay consistent with the string they index.
+// stay consistent with the string they index. A phrase preceded by an explicit
+// negation word does not apply.
 func contextAppliesIn(text string, start int, phrase string, window int) bool {
-	region := contextRegionIn(text, start, window)
+	return contextAppliesInRegion(contextRegionIn(text, start, window), phrase)
+}
+
+// contextAppliesInClause is contextAppliesIn bounded to the same clause: the
+// region never crosses a clause separator or newline.
+func contextAppliesInClause(text string, start int, phrase string, window int) bool {
+	return contextAppliesInRegion(clauseRegionIn(text, start, window), phrase)
+}
+
+// contextAppliesInRegion reports whether phrase applies within region with word
+// boundaries, not negated, and connective text after it.
+func contextAppliesInRegion(region, phrase string) bool {
 	lower := strings.ToLower(region)
 	idx := lastPhraseIndex(lower, phrase)
 	if idx < 0 {
 		return false
 	}
+	if isNegated(lower, idx) {
+		return false
+	}
 	phraseEnd := idx + len(phrase)
 	return isConnective(lower, phraseEnd, len(lower))
+}
+
+// isNegated reports whether the phrase at phraseStart is negated by a negation
+// word within the same clause, allowing only auxiliary verbs between the
+// negation word and the phrase. lower must be lowercased. Scanning never
+// crosses a clause separator or newline.
+func isNegated(lower string, phraseStart int) bool {
+	i := phraseStart
+	for {
+		for i > 0 && (lower[i-1] == ' ' || lower[i-1] == '\t') {
+			i--
+		}
+		if i == 0 {
+			return false
+		}
+		if isClauseSeparator(lower[i-1]) {
+			return false
+		}
+		j := i
+		for j > 0 && isWordByte(lower[j-1]) {
+			j--
+		}
+		word := lower[j:i]
+		if negationWords[word] {
+			return true
+		}
+		if !auxiliaryVerbs[word] {
+			return false
+		}
+		i = j
+	}
+}
+
+// clauseRegionIn returns the bounded window before start within the same
+// clause, never crossing a clause separator or newline, and always beginning on
+// a UTF-8 rune boundary.
+func clauseRegionIn(text string, start, window int) string {
+	if start < 0 || start > len(text) {
+		return ""
+	}
+	clauseStart := start
+	for clauseStart > 0 && !isClauseSeparator(text[clauseStart-1]) {
+		clauseStart--
+	}
+	lo := start
+	for i := 0; i < window && lo > clauseStart; i++ {
+		_, size := utf8.DecodeLastRuneInString(text[:lo])
+		lo -= size
+	}
+	return text[lo:start]
 }
 
 // contextRegionIn returns the bounded window before start, counting window
