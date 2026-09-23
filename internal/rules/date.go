@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/klrushka/llm-proxy/internal/detection"
 )
@@ -16,8 +18,9 @@ import (
 const TypeDate detection.Type = "DATE"
 
 // numericDateRe matches the supported numeric date forms: DD.MM.YYYY,
-// DD-MM-YYYY, DD/MM/YYYY and ISO YYYY-MM-DD. The span is the full date token.
-var numericDateRe = regexp.MustCompile(`\d{2}[./-]\d{2}[./-]\d{4}|\d{4}-\d{2}-\d{2}`)
+// DD-MM-YYYY, DD/MM/YYYY, MM.DD.YYYY and the year-first forms YYYY.MM.DD,
+// YYYY-DD-MM, YYYY/DD/MM. The span is the full date token.
+var numericDateRe = regexp.MustCompile(`\d{2}[./-]\d{2}[./-]\d{4}|\d{4}[./-]\d{2}[./-]\d{2}`)
 
 // textualDateRe matches a Russian textual date "D <month> YYYY" with an
 // optional trailing " года". The month is a genitive Russian month name,
@@ -84,9 +87,10 @@ func DetectDates(text string) []detection.Candidate {
 	return dedupeCandidates(out)
 }
 
-// validNumericDate reports whether s is a calendar-valid date in one of the
-// supported numeric forms. Mixed separators are rejected by requiring a single
-// consistent separator across the whole token.
+// validNumericDate reports whether s is a calendar-valid date in at least one
+// of the supported numeric orders: DD.MM.YYYY, MM.DD.YYYY, YYYY.MM.DD or
+// YYYY.DD.MM. Mixed separators are rejected by requiring a single consistent
+// separator across the whole token.
 func validNumericDate(s string) bool {
 	var sep byte
 	switch {
@@ -100,7 +104,6 @@ func validNumericDate(s string) bool {
 		return false
 	}
 
-	var day, month, year int
 	if strings.Count(s, string(sep)) != 2 {
 		return false
 	}
@@ -109,14 +112,12 @@ func validNumericDate(s string) bool {
 		return false
 	}
 
-	if sep == '-' && len(parts[0]) == 4 {
-		// ISO YYYY-MM-DD.
-		year, month, day = atoi(parts[0]), atoi(parts[1]), atoi(parts[2])
-	} else {
-		// DD.MM.YYYY, DD-MM-YYYY, DD/MM/YYYY.
-		day, month, year = atoi(parts[0]), atoi(parts[1]), atoi(parts[2])
-	}
-	return validCalendarDate(year, month, day)
+	a, b, c := atoi(parts[0]), atoi(parts[1]), atoi(parts[2])
+	// Accept if the token is calendar-valid in any allowed order.
+	return validCalendarDate(c, b, a) || // DD.MM.YYYY
+		validCalendarDate(c, a, b) || // MM.DD.YYYY
+		validCalendarDate(a, b, c) || // YYYY.MM.DD
+		validCalendarDate(a, c, b) // YYYY.DD.MM
 }
 
 // validTextualDate reports whether s is a calendar-valid Russian textual date
@@ -155,27 +156,28 @@ func validCalendarDate(year, month, day int) bool {
 
 // dateBoundaryOK rejects a date token embedded in a longer token, which covers
 // malformed and embedded forms. A date is rejected when an adjacent rune is a
-// letter or digit, or a date separator that connects to a longer run.
+// Unicode letter or digit, or a date separator that connects to a longer run.
+// Unicode punctuation (quotes, dashes) is allowed.
 func dateBoundaryOK(text string, start, end int) bool {
-	if start > 0 && isDateTokenRune(text[start-1]) {
-		return false
+	if start > 0 {
+		r, _ := utf8.DecodeLastRuneInString(text[:start])
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || isDateSeparatorRune(r) {
+			return false
+		}
 	}
-	if end < len(text) && isDateTokenRune(text[end]) {
-		return false
+	if end < len(text) {
+		r, _ := utf8.DecodeRuneInString(text[end:])
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || isDateSeparatorRune(r) {
+			return false
+		}
 	}
 	return true
 }
 
-// isDateTokenRune reports whether r can continue a date-like token: a digit, a
-// date separator, or a letter (Latin or Cyrillic).
-func isDateTokenRune(b byte) bool {
-	if isDigitByte(b) || b == '.' || b == '-' || b == '/' {
-		return true
-	}
-	if b >= 0x80 {
-		return true
-	}
-	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z'
+// isDateSeparatorRune reports whether r is a date separator that can connect a
+// date token to a longer run.
+func isDateSeparatorRune(r rune) bool {
+	return r == '.' || r == '-' || r == '/'
 }
 
 // atoi parses a non-negative decimal integer, returning 0 on any error.

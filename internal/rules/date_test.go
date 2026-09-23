@@ -42,8 +42,16 @@ func TestDetectDatesNumericPositive(t *testing.T) {
 		{"iso yyyy mm dd", "1990-02-01", []string{"1990-02-01"}},
 		{"leap day leap year", "29.02.2024", []string{"29.02.2024"}},
 		{"leap day iso leap year", "2024-02-29", []string{"2024-02-29"}},
+		{"mm dd yyyy dots", "12.31.2020", []string{"12.31.2020"}},
+		{"yyyy dd mm dots", "2020.31.12", []string{"2020.31.12"}},
+		{"yyyy mm dd dots", "2020.12.31", []string{"2020.12.31"}},
+		{"mm dd yyyy slashes", "12/31/2020", []string{"12/31/2020"}},
+		{"yyyy dd mm hyphens", "2020-31-12", []string{"2020-31-12"}},
 		{"cyrillic prefix offsets", "дата рождения 01.02.1990", []string{"01.02.1990"}},
 		{"multiple dates", "01.02.1990 и 15.03.1985", []string{"01.02.1990", "15.03.1985"}},
+		{"guillemets punctuation", "«01.02.1990»", []string{"01.02.1990"}},
+		{"em dash punctuation", "01.02.1990 — дата", []string{"01.02.1990"}},
+		{"en dash punctuation", "01.02.1990 – дата", []string{"01.02.1990"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -93,7 +101,6 @@ func TestDetectDatesNegative(t *testing.T) {
 		text string
 	}{
 		{"invalid day 32", "32.01.1990"},
-		{"invalid month 13", "01.13.1990"},
 		{"invalid day zero", "00.01.1990"},
 		{"invalid month zero", "01.00.1990"},
 		{"invalid year zero", "01.01.0000"},
@@ -101,10 +108,16 @@ func TestDetectDatesNegative(t *testing.T) {
 		{"february 29 non leap", "29.02.2023"},
 		{"february 29 non leap iso", "2023-02-29"},
 		{"april 31", "31.04.2020"},
+		{"invalid in all orders month 13", "13.13.2020"},
+		{"invalid in all orders feb 31", "31.02.2020"},
+		{"invalid in all orders day 32", "32.32.2020"},
+		{"invalid in all orders yyyy dd mm", "2020.31.02"},
 		{"mixed separators", "01.02-1990"},
 		{"mixed separators iso", "1990-02.01"},
 		{"embedded in longer digits", "101.02.1990"},
 		{"embedded trailing digits", "01.02.19901"},
+		{"embedded in alphanumeric word", "дата01.02.1990"},
+		{"embedded trailing letter", "01.02.1990г"},
 		{"malformed short year", "01.02.90"},
 		{"malformed short day", "1.2.90"},
 		{"unsupported text month nominative", "1 январь 1990"},
