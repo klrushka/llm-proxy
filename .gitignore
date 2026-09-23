@@ -1,3 +1,6 @@
 __pycache__/
 *.py[cod]
 .venv/
+
+# Source-only ZIP output (task 13.1). Generated archives are never committed.
+dist/

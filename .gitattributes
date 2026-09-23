@@ -1,0 +1,9 @@
+# Local development-control directories are excluded from source archives
+# produced with `git archive` (export-ignore). They are not part of the
+# shipped source and must never appear in a source-only ZIP.
+.opencode export-ignore
+.agents export-ignore
+.codex export-ignore
+
+# The source-ZIP output directory is never archived.
+dist export-ignore

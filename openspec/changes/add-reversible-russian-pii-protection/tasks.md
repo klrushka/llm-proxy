@@ -119,7 +119,7 @@
 
 ## 13. Source-only ZIP, deployment и live smoke
 
-- [ ] 13.1 Добавить source-only ZIP verification с исключениями `.git`, `.venv`, binaries, caches, datasets, archives, media и secrets; observable check: ZIP собирается и проверяется на отсутствие исключённых элементов.
+- [x] 13.1 Добавить source-only ZIP verification с исключениями `.git`, `.venv`, binaries, caches, datasets, archives, media и secrets; observable check: ZIP собирается и проверяется на отсутствие исключённых элементов.
 - [ ] 13.2 Добавить deployment/runbook; observable check: runbook команды выполняются.
 - [ ] 13.3 Добавить live smoke после deployment по выбранному deployed URL (HTTP или HTTPS; для HTTPS smoke поддерживает self-signed режим checker-а); observable check: live smoke проходит по выбранному протоколу.
 
