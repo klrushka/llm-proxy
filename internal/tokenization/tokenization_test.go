@@ -1,6 +1,7 @@
 package tokenization
 
 import (
+	"encoding/hex"
 	"errors"
 	"io"
 	"regexp"
@@ -67,9 +68,8 @@ func TestTokenShape(t *testing.T) {
 	if !tokenShape.MatchString(tok) {
 		t.Errorf("Token() = %q, does not match shape %v", tok, tokenShape)
 	}
-	want := "<" + string(detection.TypeFullName) + "_00000000000000000000000000000000>"
-	if tok != want {
-		t.Errorf("Token() = %q, want %q", tok, want)
+	if !strings.HasPrefix(tok, "<"+string(detection.TypeFullName)+"_") {
+		t.Errorf("Token() = %q, want %q prefix", tok, "<"+string(detection.TypeFullName)+"_")
 	}
 }
 
@@ -182,12 +182,15 @@ func TestInvalidInput(t *testing.T) {
 }
 
 func TestCollisionRetry(t *testing.T) {
-	// First token for key A consumes suffix S1. The token for key B (same type,
-	// different value) first draws S1 again (a collision with key A) and must
-	// retry, drawing S2 on the second attempt.
+	// The suffix is derived from a random seed and the digestKey through the
+	// PRF, so two different keys drawing the same seed no longer collide by
+	// construction. To exercise the retry safety net deterministically, we
+	// pre-seed the reverse token index so that the first draw for key B would
+	// produce a token already claimed by key A; the generator must then retry
+	// with a fresh seed.
 	g := newGenerator(&seqReader{blocks: [][]byte{
 		block("11111111111111111111111111111111"), // S1 for key A
-		block("11111111111111111111111111111111"), // S1 again -> collision
+		block("11111111111111111111111111111111"), // S1 again -> collision for key B
 		block("22222222222222222222222222222222"), // S2 for key B
 	}}, mustRegistry(t))
 
@@ -195,6 +198,29 @@ func TestCollisionRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Token(A) error = %v", err)
 	}
+
+	// Compute the token key B would produce on its first draw (seed S1) and
+	// claim it for key A so the collision check fires.
+	kb := digestKey{
+		scope: g.digestScope("scope-1"),
+		typ:   detection.TypeEmail,
+		value: g.digestValue("b@example.com"),
+	}
+	ka := digestKey{
+		scope: g.digestScope("scope-1"),
+		typ:   detection.TypeEmail,
+		value: g.digestValue("a@example.com"),
+	}
+	var s1 [seedBytes]byte
+	copy(s1[:], block("11111111111111111111111111111111"))
+	firstSuffix := g.suffixFor(s1, kb)
+	firstTok := g.tokenString(detection.TypeEmail, firstSuffix)
+	firstDigest := g.digestToken(firstTok)
+
+	g.mu.Lock()
+	g.tokens[firstDigest] = ka
+	g.mu.Unlock()
+
 	b, err := g.Token("scope-1", detection.TypeEmail, "b@example.com")
 	if err != nil {
 		t.Fatalf("Token(B) error = %v", err)
@@ -202,11 +228,13 @@ func TestCollisionRetry(t *testing.T) {
 	if a == b {
 		t.Fatalf("collision retry failed: tokens equal %q", a)
 	}
-	if !strings.HasSuffix(a, "11111111111111111111111111111111>") {
-		t.Errorf("Token(A) = %q, want suffix 1111...>", a)
-	}
-	if !strings.HasSuffix(b, "22222222222222222222222222222222>") {
-		t.Errorf("Token(B) = %q, want suffix 2222...>", b)
+	// The retried token must be derived from the second seed S2, not the
+	// colliding first draw.
+	var s2 [seedBytes]byte
+	copy(s2[:], block("22222222222222222222222222222222"))
+	wantSuffix := g.suffixFor(s2, kb)
+	if !strings.HasSuffix(b, hex.EncodeToString(wantSuffix[:])+">") {
+		t.Errorf("Token(B) = %q, want suffix derived from S2", b)
 	}
 }
 
