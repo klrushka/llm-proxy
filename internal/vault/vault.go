@@ -2,18 +2,17 @@
 // key (scope_id, token) and resolves them back to the original value. It is the
 // persistence layer of the reversible-tokenization capability.
 //
-// The package defines a Vault interface plus a thread-safe in-memory demo
-// adapter. The demo adapter stores plaintext originals in volatile memory and
-// is intended only for local demos and tests; it does not survive restart.
+// The package defines a Vault interface plus two volatile adapters. The
+// Encrypted adapter is the production adapter: it stores only AES-256-GCM
+// ciphertext of the original value and indexes mappings by HMAC-SHA-256 digests
+// of the scope and token, so no reversible material is held in plaintext. The
+// Memory adapter stores plaintext originals in volatile memory and is intended
+// only for local demos and tests; it does not survive restart and must not be
+// used in production wiring.
 //
-// IMPORTANT: A persistent adapter MUST store only AES-256-GCM ciphertext and
-// never plaintext originals, token mappings, keys or any reversible material.
-// The persistent adapter is intentionally NOT implemented here; it is a later
-// task. The interface below is the contract that such an adapter must satisfy.
-//
-// Scope of this package (task 7.4): the Vault interface and the in-memory demo
-// adapter with TTL and scope revoke. Detokenization and HTTP integration are
-// separate tasks and are not implemented here.
+// Scope of this package (task 7.4): the Vault interface, the encrypted volatile
+// adapter and the in-memory demo adapter, with TTL and scope revoke.
+// Detokenization and HTTP integration are separate tasks.
 package vault
 
 import (
@@ -45,6 +44,11 @@ var (
 	// ErrInvalidTTL reports a non-positive TTL passed to the Memory
 	// constructor. It never embeds the TTL value.
 	ErrInvalidTTL = errors.New("vault: invalid ttl")
+	// ErrCorrupted reports that a stored record could not be decrypted because
+	// it was tampered with, was produced under a different key, or is
+	// otherwise corrupted. It is the fail-closed sentinel for the encrypted
+	// adapter and never discloses the ciphertext, key or original value.
+	ErrCorrupted = errors.New("vault: corrupted record")
 )
 
 // Vault stores and resolves reversible token mappings by the exact composite
@@ -100,9 +104,9 @@ type entry struct {
 // Memory is a thread-safe in-memory demo adapter for Vault. It stores plaintext
 // originals in volatile memory and is intended only for local demos and tests.
 //
-// It is NOT a persistent adapter: it does not survive restart and it holds
-// plaintext. A persistent adapter MUST store only AES-256-GCM ciphertext and is
-// intentionally not implemented here.
+// It is NOT a production adapter: it does not survive restart and it holds
+// plaintext. Production wiring must use the Encrypted adapter, which stores
+// only AES-256-GCM ciphertext.
 type Memory struct {
 	mu      sync.Mutex
 	mapping map[key]entry
@@ -158,6 +162,12 @@ func (m *Memory) Save(ctx context.Context, scope, token, original string) error 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// Re-check cancellation after acquiring the lock so a cancelled operation
+	// never writes a mapping.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	now := m.now()
 	if existing, ok := m.mapping[k]; ok {
 		if now.Before(existing.expiresAt) {
@@ -193,6 +203,12 @@ func (m *Memory) Resolve(ctx context.Context, scope, token string) (string, erro
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// Re-check cancellation after acquiring the lock so a cancelled operation
+	// never reads plaintext or mutates state.
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+
 	e, ok := m.mapping[k]
 	if !ok {
 		return "", ErrNotFound
@@ -217,6 +233,12 @@ func (m *Memory) RevokeScope(ctx context.Context, scope string) error {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// Re-check cancellation after acquiring the lock so a cancelled operation
+	// never mutates state.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	for k := range m.mapping {
 		if k.scope == scope {
