@@ -113,16 +113,34 @@ var passportMarkers = []string{
 	"паспорт",
 }
 
-// positiveMarkers are positive physical-person markers producing
-// ReasonPositiveContext.
+// positiveMarkers are strong physical-person markers producing
+// ReasonPositiveContext. Classification-only markers (родился, проживает, etc.)
+// are deliberately absent: they classify DATE/LOCATION/address components in the
+// contextual stage but are not sufficient ownership evidence on their own.
 var positiveMarkers = []string{
-	"дата рождения", "адрес регистрации",
+	"дата рождения", "адрес регистрации", "место рождения",
+}
+
+// negationWords are the words that negate a positive marker.
+var negationWords = map[string]bool{"не": true, "никогда": true}
+
+// auxiliaryVerbs are the auxiliary verbs allowed between a negation word and a
+// negated phrase (e.g. "не был выдан", "никогда не был зарегистрирован").
+var auxiliaryVerbs = map[string]bool{
+	"был": true, "была": true, "были": true, "было": true, "быть": true,
 }
 
 // orgMarkers are explicit organization context phrases from the spec.
 var orgMarkers = []string{
 	"ооо", "ао", "пао", "банк", "филиал", "отделение",
 	"юридический адрес", "инн организации",
+}
+
+// innOrgContexts are the narrow explicit organization contexts that keep an
+// INN_PERSON candidate ORGANIZATION even though INN_PERSON is an explicit
+// high-risk type. They are a strict subset of orgMarkers.
+var innOrgContexts = []string{
+	"инн организации", "инн юрлица",
 }
 
 // publicMarkers are explicit public/literary context phrases from the spec.
@@ -165,10 +183,10 @@ func Assess(text string, entities []merge.Entity) []Entity {
 		if !it.valid {
 			continue
 		}
-		if isNameType(it.entity.Type) {
+		if entityHasName(it.entity) {
 			blockHasName[it.lineStart] = true
 		}
-		if isLinkedType(it.entity.Type) {
+		if entityHasLinked(it.entity) {
 			blockHasLinked[it.lineStart] = true
 		}
 	}
@@ -242,19 +260,36 @@ type decision struct {
 }
 
 // decide classifies one entity using bounded local context and block-level
-// co-occurrence. Organization and public negative context win over any nearby
-// positive-looking evidence.
+// co-occurrence. Organization and public negative context win over nearby
+// positive-looking evidence, except that explicit high-risk types stay personal
+// even when an organization or public marker appears nearby. The narrow
+// INN-organization exception keeps an INN_PERSON candidate ORGANIZATION.
 func decide(text string, e merge.Entity, lineStart, lineEnd int, blockHasName, blockHasLinked bool) decision {
 	region := contextRegion(text, lineStart, lineEnd, e.Start, e.End)
 	lower := strings.ToLower(region)
 
-	if hasAnyPhrase(lower, orgMarkers) {
+	// Explicit high-risk types must not become non-personal merely because of a
+	// neighboring organization or public word (e.g. "банк", "отделение",
+	// "поэт"); they remain personal and are masked. Non-high-risk entities
+	// (addresses, names) still yield to organization/public negative context.
+	// The narrow INN-organization exception keeps an INN_PERSON candidate
+	// ORGANIZATION.
+	highRisk := isExplicitHighRiskType(e.Type)
+
+	if hasAnyPhrase(lower, innOrgContexts) {
 		return decision{ownerType: OwnerTypeOrganization, score: scoreNegative,
 			reasons: []ReasonCode{ReasonOrganizationContext}}
 	}
-	if hasAnyPhrase(lower, publicMarkers) {
-		return decision{ownerType: OwnerTypePublic, score: scoreNegative,
-			reasons: []ReasonCode{ReasonPublicContext}}
+
+	if !highRisk {
+		if hasAnyPhrase(lower, orgMarkers) {
+			return decision{ownerType: OwnerTypeOrganization, score: scoreNegative,
+				reasons: []ReasonCode{ReasonOrganizationContext}}
+		}
+		if hasAnyPhrase(lower, publicMarkers) {
+			return decision{ownerType: OwnerTypePublic, score: scoreNegative,
+				reasons: []ReasonCode{ReasonPublicContext}}
+		}
 	}
 
 	var reasons []ReasonCode
@@ -264,13 +299,16 @@ func decide(text string, e merge.Entity, lineStart, lineEnd int, blockHasName, b
 	if hasAnyPhrase(lower, passportMarkers) {
 		reasons = append(reasons, ReasonPassportContext)
 	}
-	if hasAnyPhrase(lower, positiveMarkers) {
+	if hasAnyPhraseNotNegated(lower, positiveMarkers) {
 		reasons = append(reasons, ReasonPositiveContext)
+	}
+	if isExplicitHighRiskType(e.Type) {
+		reasons = append(reasons, ReasonFieldLabel)
 	}
 	if isStructuredType(e.Type) && hasAnyPhrase(lower, fieldLabels) {
 		reasons = append(reasons, ReasonFieldLabel)
 	}
-	if (isNameType(e.Type) && blockHasLinked) || (isLinkedType(e.Type) && blockHasName) {
+	if (entityHasName(e) && blockHasLinked) || (entityHasLinked(e) && blockHasName) {
 		reasons = append(reasons, ReasonLinkedEntities)
 	}
 
@@ -361,6 +399,73 @@ func hasAnyPhrase(s string, phrases []string) bool {
 	return false
 }
 
+// hasAnyPhraseNotNegated reports whether any phrase appears in s with word
+// boundaries and is not immediately negated by a negation word.
+func hasAnyPhraseNotNegated(s string, phrases []string) bool {
+	for _, p := range phrases {
+		if phrasePresentNotNegated(s, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// phrasePresentNotNegated reports whether phrase appears in s with word
+// boundaries and is not immediately preceded by a negation word. s must already
+// be lowercased to match phrase.
+func phrasePresentNotNegated(s, phrase string) bool {
+	for i := 0; i+len(phrase) <= len(s); i++ {
+		if s[i:i+len(phrase)] != phrase {
+			continue
+		}
+		if i > 0 && isWordByte(s[i-1]) {
+			continue
+		}
+		if i+len(phrase) < len(s) && isWordByte(s[i+len(phrase)]) {
+			continue
+		}
+		if isNegated(s, i) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// isNegated reports whether the word immediately before phraseStart (allowing
+// only whitespace) is a negation word. s must already be lowercased.
+func isNegated(s string, phraseStart int) bool {
+	i := phraseStart
+	for {
+		for i > 0 && (s[i-1] == ' ' || s[i-1] == '\t') {
+			i--
+		}
+		if i == 0 {
+			return false
+		}
+		if isClauseSeparator(s[i-1]) {
+			return false
+		}
+		j := i
+		for j > 0 && isWordByte(s[j-1]) {
+			j--
+		}
+		word := s[j:i]
+		if negationWords[word] {
+			return true
+		}
+		if !auxiliaryVerbs[word] {
+			return false
+		}
+		i = j
+	}
+}
+
+// isClauseSeparator reports whether b ends a clause for negation scanning.
+func isClauseSeparator(b byte) bool {
+	return b == ';' || b == '.' || b == '!' || b == '?' || b == '\n'
+}
+
 // phrasePresent reports whether phrase appears in s with word boundaries on
 // both sides. s must already be lowercased to match phrase.
 func phrasePresent(s, phrase string) bool {
@@ -398,6 +503,34 @@ func isNameType(t detection.Type) bool {
 	return false
 }
 
+// entityHasName reports whether the entity's top-level type or any of its
+// contained components is a name type.
+func entityHasName(e merge.Entity) bool {
+	if isNameType(e.Type) {
+		return true
+	}
+	for _, c := range e.Components {
+		if isNameType(c.Type) {
+			return true
+		}
+	}
+	return false
+}
+
+// entityHasLinked reports whether the entity's top-level type or any of its
+// contained components is a linked identifier type.
+func entityHasLinked(e merge.Entity) bool {
+	if isLinkedType(e.Type) {
+		return true
+	}
+	for _, c := range e.Components {
+		if isLinkedType(c.Type) {
+			return true
+		}
+	}
+	return false
+}
+
 // isLinkedType reports whether t is an identifier that links to a name.
 func isLinkedType(t detection.Type) bool {
 	switch t {
@@ -413,6 +546,25 @@ func isLinkedType(t detection.Type) bool {
 func isStructuredType(t detection.Type) bool {
 	switch t {
 	case detection.TypePhone, detection.TypeEmail:
+		return true
+	}
+	return false
+}
+
+// isExplicitHighRiskType reports whether t is a canonical type whose detection
+// is already structural, validator-backed or marker-based. Such an entity is
+// personal without requiring name co-occurrence or a field label phrase: leaving
+// it plaintext is unsafe. Organization and public negative context still win
+// because they are evaluated before this path.
+func isExplicitHighRiskType(t detection.Type) bool {
+	switch t {
+	case detection.TypeEmail, detection.TypePhone,
+		detection.TypePassportNumber, detection.TypePassportDivisionCode,
+		detection.TypePassportIssueDate, detection.TypePassportIssuer,
+		detection.TypeDriverLicenseNumber, detection.TypeINNPerson,
+		detection.TypeBankCardNumber, detection.TypeCardCVV,
+		detection.TypeCardPIN, detection.TypeCardholderName,
+		detection.TypeCitizenship:
 		return true
 	}
 	return false

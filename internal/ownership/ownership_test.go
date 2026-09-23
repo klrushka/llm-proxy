@@ -252,6 +252,443 @@ func TestNegativeOverridesPositiveEvidence(t *testing.T) {
 	}
 }
 
+func TestPositiveMarkersGivePositiveContext(t *testing.T) {
+	tests := []struct {
+		text string
+		sub  string
+		typ  detection.Type
+	}{
+		{"дата рождения 01.02.1990", "01.02.1990", detection.TypeBirthDate},
+		{"адрес регистрации: Москва", "Москва", detection.TypeAddress},
+		{"место рождения город Тестовск", "Тестовск", detection.TypeBirthPlace},
+	}
+	for _, tt := range tests {
+		start := idx(t, tt.text, tt.sub)
+		in := []merge.Entity{ent(tt.typ, start, start+len(tt.sub), 0.9, detection.SourceRubert)}
+		got := Assess(tt.text, in)
+		if len(got) != 1 {
+			t.Fatalf("Assess(%q) = %d results, want 1", tt.text, len(got))
+		}
+		e := got[0]
+		if !e.Personal {
+			t.Errorf("Assess(%q) personal = false, want true", tt.text)
+		}
+		if e.OwnerType != OwnerTypePerson {
+			t.Errorf("Assess(%q) owner type = %s, want PERSON", tt.text, e.OwnerType)
+		}
+		if !hasReason(e.ReasonCodes, ReasonPositiveContext) {
+			t.Errorf("Assess(%q) reasons = %v, want ReasonPositiveContext", tt.text, e.ReasonCodes)
+		}
+	}
+}
+
+// TestExplicitHighRiskTypesPersonalWithoutName proves that canonical high-risk
+// types whose detection is already structural, validator-backed or marker-based
+// become personal without any name co-occurrence or field label phrase. Each
+// entity is classified PERSON with the stable field_label reason.
+func TestExplicitHighRiskTypesPersonalWithoutName(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		sub  string
+		typ  detection.Type
+	}{
+		{"email", "ivanov@example.com", "ivanov@example.com", detection.TypeEmail},
+		{"phone", "+7 900 123-45-67", "+7 900 123-45-67", detection.TypePhone},
+		{"passport number", "паспорт 00 00 000000", "00 00 000000", detection.TypePassportNumber},
+		{"passport division code", "код подразделения 000-000", "000-000", detection.TypePassportDivisionCode},
+		{"passport issue date", "дата выдачи 03.04.2020", "03.04.2020", detection.TypePassportIssueDate},
+		{"passport issuer", "кем выдан: ОВД района", "ОВД района", detection.TypePassportIssuer},
+		{"driver license number", "водительское удостоверение 7777 123456", "7777 123456", detection.TypeDriverLicenseNumber},
+		{"inn person", "ИНН физлица 123456789047", "123456789047", detection.TypeINNPerson},
+		{"bank card number", "Карта 4111111111111111", "4111111111111111", detection.TypeBankCardNumber},
+		{"card cvv", "CVV: 123", "123", detection.TypeCardCVV},
+		{"card pin", "PIN: 4567", "4567", detection.TypeCardPIN},
+		{"cardholder name", "Cardholder: Ivan Ivanov", "Ivan Ivanov", detection.TypeCardholderName},
+		{"citizenship", "гражданство: Российская Федерация", "Российская Федерация", detection.TypeCitizenship},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			start := idx(t, tt.text, tt.sub)
+			in := []merge.Entity{ent(tt.typ, start, start+len(tt.sub), 0.9, detection.SourceRegex)}
+			got := Assess(tt.text, in)
+			if len(got) != 1 {
+				t.Fatalf("Assess(%q) = %d results, want 1", tt.text, len(got))
+			}
+			e := got[0]
+			if !e.Personal {
+				t.Errorf("Assess(%q) personal = false, want true", tt.text)
+			}
+			if e.OwnerType != OwnerTypePerson {
+				t.Errorf("Assess(%q) owner type = %s, want PERSON", tt.text, e.OwnerType)
+			}
+			if e.ReviewRecommended {
+				t.Errorf("Assess(%q) review recommended = true, want false", tt.text)
+			}
+			if !hasReason(e.ReasonCodes, ReasonFieldLabel) {
+				t.Errorf("Assess(%q) reasons = %v, want ReasonFieldLabel", tt.text, e.ReasonCodes)
+			}
+		})
+	}
+}
+
+// TestExplicitHighRiskTypeOrganizationPrecedence proves that explicit
+// organization context still wins over the explicit high-risk path: a bank
+// branch address and a legal-entity INN never become personal.
+func TestExplicitHighRiskTypeOrganizationPrecedence(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		sub  string
+		typ  detection.Type
+	}{
+		{"bank branch address", "Отделение банка находится по адресу: г. Москва, ул. Тестовая, д. 1", "г. Москва, ул. Тестовая, д. 1", detection.TypeAddress},
+		{"org inn", "ИНН организации 123456789047", "123456789047", detection.TypeINNPerson},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			start := idx(t, tt.text, tt.sub)
+			in := []merge.Entity{ent(tt.typ, start, start+len(tt.sub), 0.9, detection.SourceRegex)}
+			got := Assess(tt.text, in)
+			if len(got) != 1 {
+				t.Fatalf("Assess(%q) = %d results, want 1", tt.text, len(got))
+			}
+			e := got[0]
+			if e.Personal {
+				t.Errorf("Assess(%q) personal = true, want false (organization precedence)", tt.text)
+			}
+			if e.OwnerType != OwnerTypeOrganization {
+				t.Errorf("Assess(%q) owner type = %s, want ORGANIZATION", tt.text, e.OwnerType)
+			}
+			if e.ReviewRecommended {
+				t.Errorf("Assess(%q) review recommended = true, want false", tt.text)
+			}
+		})
+	}
+}
+
+// TestExplicitHighRiskTypePublicPrecedence proves that explicit public/literary
+// context still wins over the explicit high-risk path: a public person mention
+// never becomes personal.
+func TestExplicitHighRiskTypePublicPrecedence(t *testing.T) {
+	text := "Александр Пушкин — русский поэт."
+	nameStart := idx(t, text, "Александр Пушкин")
+	in := []merge.Entity{
+		ent(detection.TypeFullName, nameStart, nameStart+len("Александр Пушкин"), 0.95, detection.SourceRubert),
+	}
+	got := Assess(text, in)
+	if len(got) != 1 {
+		t.Fatalf("Assess() = %d results, want 1", len(got))
+	}
+	e := got[0]
+	if e.Personal {
+		t.Errorf("personal = true, want false (public precedence)")
+	}
+	if e.OwnerType != OwnerTypePublic {
+		t.Errorf("owner type = %s, want PUBLIC", e.OwnerType)
+	}
+	if e.ReviewRecommended {
+		t.Errorf("review recommended = true, want false")
+	}
+}
+
+// TestExplicitHighRiskTypeWinsOverBankContext proves that explicit high-risk
+// types stay personal even when a neighboring organization word such as "банк"
+// or "отделение" appears in the local context. The email and phone in the
+// example must remain personal and be masked.
+func TestExplicitHighRiskTypeWinsOverBankContext(t *testing.T) {
+	text := "Банк просит клиента указать email ivanov@example.com и телефон +7 900 123-45-67"
+	emailStart := idx(t, text, "ivanov@example.com")
+	phoneStart := idx(t, text, "+7 900 123-45-67")
+	in := []merge.Entity{
+		ent(detection.TypeEmail, emailStart, emailStart+len("ivanov@example.com"), 0.95, detection.SourceRegex),
+		ent(detection.TypePhone, phoneStart, phoneStart+len("+7 900 123-45-67"), 0.9, detection.SourceRegex),
+	}
+	got := Assess(text, in)
+	if len(got) != 2 {
+		t.Fatalf("Assess() = %d results, want 2", len(got))
+	}
+	for _, e := range got {
+		if !e.Personal {
+			t.Errorf("entity %s personal = false, want true (bank context must not demote)", e.Type)
+		}
+		if e.OwnerType != OwnerTypePerson {
+			t.Errorf("entity %s owner type = %s, want PERSON", e.Type, e.OwnerType)
+		}
+		if e.ReviewRecommended {
+			t.Errorf("entity %s review recommended = true, want false", e.Type)
+		}
+		if !hasReason(e.ReasonCodes, ReasonFieldLabel) {
+			t.Errorf("entity %s reasons = %v, want ReasonFieldLabel", e.Type, e.ReasonCodes)
+		}
+	}
+}
+
+// TestExplicitHighRiskTypeWinsOverOrgPublicContext proves that a sensitive
+// credential and other explicit high-risk types stay personal even when an
+// organization or public marker appears nearby.
+func TestExplicitHighRiskTypeWinsOverOrgPublicContext(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		sub  string
+		typ  detection.Type
+	}{
+		{"card near bank", "Банк выпустил карту 4111111111111111", "4111111111111111", detection.TypeBankCardNumber},
+		{"cvv near отделение", "Отделение банка, CVV: 123", "123", detection.TypeCardCVV},
+		{"passport near филиал", "Филиал банка, паспорт 00 00 000000", "00 00 000000", detection.TypePassportNumber},
+		{"citizenship near поэт", "Поэт указал гражданство: Российская Федерация", "Российская Федерация", detection.TypeCitizenship},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			start := idx(t, tt.text, tt.sub)
+			in := []merge.Entity{ent(tt.typ, start, start+len(tt.sub), 0.9, detection.SourceRegex)}
+			got := Assess(tt.text, in)
+			if len(got) != 1 {
+				t.Fatalf("Assess(%q) = %d results, want 1", tt.text, len(got))
+			}
+			e := got[0]
+			if !e.Personal {
+				t.Errorf("Assess(%q) personal = false, want true (org/public context must not demote)", tt.text)
+			}
+			if e.OwnerType != OwnerTypePerson {
+				t.Errorf("Assess(%q) owner type = %s, want PERSON", tt.text, e.OwnerType)
+			}
+			if e.ReviewRecommended {
+				t.Errorf("Assess(%q) review recommended = true, want false", tt.text)
+			}
+		})
+	}
+}
+
+// TestINNOrganizationException proves that the narrow explicit INN-organization
+// context keeps an INN_PERSON candidate ORGANIZATION even though INN_PERSON is
+// an explicit high-risk type.
+func TestINNOrganizationException(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+	}{
+		{"инн организации", "ИНН организации 123456789047"},
+		{"инн юрлица", "ИНН юрлица 123456789047"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			start := idx(t, tt.text, "123456789047")
+			in := []merge.Entity{ent(detection.TypeINNPerson, start, start+len("123456789047"), 0.9, detection.SourceRegex)}
+			got := Assess(tt.text, in)
+			if len(got) != 1 {
+				t.Fatalf("Assess(%q) = %d results, want 1", tt.text, len(got))
+			}
+			e := got[0]
+			if e.Personal {
+				t.Errorf("Assess(%q) personal = true, want false (INN organization exception)", tt.text)
+			}
+			if e.OwnerType != OwnerTypeOrganization {
+				t.Errorf("Assess(%q) owner type = %s, want ORGANIZATION", tt.text, e.OwnerType)
+			}
+			if e.ReviewRecommended {
+				t.Errorf("Assess(%q) review recommended = true, want false", tt.text)
+			}
+		})
+	}
+}
+
+// TestExplicitHighRiskTypeDisabledByPolicy proves that a disabled explicit
+// high-risk type is not tokenized and does not affect the allowed ownership of
+// a co-occurring allowed type.
+func TestExplicitHighRiskTypeDisabledByPolicy(t *testing.T) {
+	text := "Иванов Иван Иванович, паспорт 00 00 000000"
+	nameStart := idx(t, text, "Иванов Иван Иванович")
+	passStart := idx(t, text, "00 00 000000")
+	in := []merge.Entity{
+		ent(detection.TypeFullName, nameStart, nameStart+len("Иванов Иван Иванович"), 0.95, detection.SourceRubert),
+		ent(detection.TypePassportNumber, passStart, passStart+len("00 00 000000"), 1.0, detection.SourceRegex),
+	}
+	assessed := Assess(text, in)
+	p := policy.NewPolicy("consumer-a", []string{string(detection.TypeFullName)})
+
+	got := ApplyPolicy(assessed, p)
+	if len(got) != 2 {
+		t.Fatalf("ApplyPolicy() = %d results, want 2", len(got))
+	}
+	name := find(t, got, detection.TypeFullName)
+	pass := find(t, got, detection.TypePassportNumber)
+	if !name.Personal {
+		t.Errorf("name personal = false, want true (type allowed)")
+	}
+	if pass.Personal {
+		t.Errorf("passport personal = true, want false (type excluded)")
+	}
+	if !hasReason(pass.ReasonCodes, ReasonTypeDisabledByPolicy) {
+		t.Errorf("passport reasons %v missing type_disabled_by_policy", pass.ReasonCodes)
+	}
+	if pass.OwnerType != OwnerTypePerson {
+		t.Errorf("passport owner type = %s, want PERSON preserved", pass.OwnerType)
+	}
+	if pass.OwnerID == "" || pass.OwnerID != name.OwnerID {
+		t.Errorf("passport owner id %q != name owner id %q, want preserved shared id", pass.OwnerID, name.OwnerID)
+	}
+}
+
+func TestClassificationOnlyMarkersAmbiguous(t *testing.T) {
+	tests := []struct {
+		text string
+		sub  string
+		typ  detection.Type
+	}{
+		{"родился 01.02.1990", "01.02.1990", detection.TypeBirthDate},
+		{"родилась 01.02.1990", "01.02.1990", detection.TypeBirthDate},
+		{"адрес проживания: Москва", "Москва", detection.TypeAddress},
+		{"проживает в Москве", "Москве", detection.TypeAddress},
+		{"зарегистрирован в Москве", "Москве", detection.TypeAddress},
+	}
+	for _, tt := range tests {
+		start := idx(t, tt.text, tt.sub)
+		in := []merge.Entity{ent(tt.typ, start, start+len(tt.sub), 0.9, detection.SourceRubert)}
+		got := Assess(tt.text, in)
+		if len(got) != 1 {
+			t.Fatalf("Assess(%q) = %d results, want 1", tt.text, len(got))
+		}
+		e := got[0]
+		if e.Personal {
+			t.Errorf("Assess(%q) personal = true, want false (classification-only)", tt.text)
+		}
+		if e.OwnerType != OwnerTypeUnknown {
+			t.Errorf("Assess(%q) owner type = %s, want UNKNOWN", tt.text, e.OwnerType)
+		}
+		if !e.ReviewRecommended {
+			t.Errorf("Assess(%q) review recommended = false, want true", tt.text)
+		}
+		if hasReason(e.ReasonCodes, ReasonPositiveContext) {
+			t.Errorf("Assess(%q) reasons = %v, want no ReasonPositiveContext", tt.text, e.ReasonCodes)
+		}
+	}
+}
+
+func TestNegatedPositiveMarkersNotPersonal(t *testing.T) {
+	tests := []struct {
+		text string
+		sub  string
+		typ  detection.Type
+	}{
+		{"это не дата рождения: 01.02.1990", "01.02.1990", detection.TypeBirthDate},
+		{"это не был адрес регистрации: Москва", "Москва", detection.TypeAddress},
+		{"это никогда не была дата рождения: 01.02.1990", "01.02.1990", detection.TypeBirthDate},
+		{"это никогда не был адрес регистрации: Москва", "Москва", detection.TypeAddress},
+	}
+	for _, tt := range tests {
+		start := idx(t, tt.text, tt.sub)
+		in := []merge.Entity{ent(tt.typ, start, start+len(tt.sub), 0.9, detection.SourceRubert)}
+		got := Assess(tt.text, in)
+		if len(got) != 1 {
+			t.Fatalf("Assess(%q) = %d results, want 1", tt.text, len(got))
+		}
+		e := got[0]
+		if e.Personal {
+			t.Errorf("Assess(%q) personal = true, want false (negated marker)", tt.text)
+		}
+		if e.OwnerType != OwnerTypeUnknown {
+			t.Errorf("Assess(%q) owner type = %s, want UNKNOWN", tt.text, e.OwnerType)
+		}
+		if !e.ReviewRecommended {
+			t.Errorf("Assess(%q) review recommended = false, want true", tt.text)
+		}
+		if hasReason(e.ReasonCodes, ReasonPositiveContext) {
+			t.Errorf("Assess(%q) reasons = %v, want no ReasonPositiveContext", tt.text, e.ReasonCodes)
+		}
+	}
+}
+
+func TestPositiveMarkerAfterClauseBoundary(t *testing.T) {
+	tests := []struct {
+		text string
+		sub  string
+		typ  detection.Type
+	}{
+		{"это не дата встречи. дата рождения: 01.02.1990", "01.02.1990", detection.TypeBirthDate},
+		{"это не адрес офиса; адрес регистрации: Москва", "Москва", detection.TypeAddress},
+	}
+	for _, tt := range tests {
+		start := idx(t, tt.text, tt.sub)
+		in := []merge.Entity{ent(tt.typ, start, start+len(tt.sub), 0.9, detection.SourceRubert)}
+		got := Assess(tt.text, in)
+		if len(got) != 1 {
+			t.Fatalf("Assess(%q) = %d results, want 1", tt.text, len(got))
+		}
+		e := got[0]
+		if !e.Personal {
+			t.Errorf("Assess(%q) personal = false, want true", tt.text)
+		}
+		if e.OwnerType != OwnerTypePerson {
+			t.Errorf("Assess(%q) owner type = %s, want PERSON", tt.text, e.OwnerType)
+		}
+		if !hasReason(e.ReasonCodes, ReasonPositiveContext) {
+			t.Errorf("Assess(%q) reasons = %v, want ReasonPositiveContext", tt.text, e.ReasonCodes)
+		}
+	}
+}
+
+func TestOrganizationOverridesPositiveMarker(t *testing.T) {
+	text := "ООО Ромашка, юридический адрес: Москва, ул. Ленина, д. 5"
+	addrStart := idx(t, text, "Москва, ул. Ленина, д. 5")
+	in := []merge.Entity{
+		ent(detection.TypeAddress, addrStart, addrStart+len("Москва, ул. Ленина, д. 5"), 0.9, detection.SourceRubert),
+	}
+	got := Assess(text, in)
+	if len(got) != 1 {
+		t.Fatalf("Assess() = %d results, want 1", len(got))
+	}
+	e := got[0]
+	if e.Personal {
+		t.Errorf("personal = true, want false (organization overrides positive marker)")
+	}
+	if e.OwnerType != OwnerTypeOrganization {
+		t.Errorf("owner type = %s, want ORGANIZATION", e.OwnerType)
+	}
+}
+
+func TestComponentNameEvidenceLinksEntity(t *testing.T) {
+	text := "Иван, email: ivan@example.com"
+	nameStart := idx(t, text, "Иван")
+	emailStart := idx(t, text, "ivan@example.com")
+	nameEnd := nameStart + len("Иван")
+	emailEnd := emailStart + len("ivan@example.com")
+
+	city := merge.Entity{
+		Candidate: detection.Candidate{
+			Type: detection.TypeAddressCity, Start: nameStart, End: nameEnd,
+			Confidence: 0.95, Sources: []detection.Source{detection.SourceRubert},
+		},
+		Components: []detection.Candidate{
+			{Type: detection.TypeFullName, Start: nameStart, End: nameEnd,
+				Confidence: 0.8, Sources: []detection.Source{detection.SourceGliner}},
+		},
+	}
+	email := merge.Entity{
+		Candidate: detection.Candidate{
+			Type: detection.TypeEmail, Start: emailStart, End: emailEnd,
+			Confidence: 0.9, Sources: []detection.Source{detection.SourceRegex, detection.SourceValidator},
+		},
+	}
+
+	got := Assess(text, []merge.Entity{city, email})
+	if len(got) != 2 {
+		t.Fatalf("Assess() = %d results, want 2", len(got))
+	}
+	for _, e := range got {
+		if !e.Personal {
+			t.Errorf("entity %s personal = false, want true", e.Type)
+		}
+		if e.OwnerType != OwnerTypePerson {
+			t.Errorf("entity %s owner type = %s, want PERSON", e.Type, e.OwnerType)
+		}
+		if !hasReason(e.ReasonCodes, ReasonLinkedEntities) {
+			t.Errorf("entity %s reasons = %v, want ReasonLinkedEntities", e.Type, e.ReasonCodes)
+		}
+	}
+}
+
 func TestSeparateParagraphsDoNotShareContextOrOwner(t *testing.T) {
 	text := "Клиент ТЕСТОВ ТЕСТ ТЕСТОВИЧ, паспорт 00 00 000000\nПетров Пётр Петрович\nКлиент СИДОРОВ СИДОР СИДОРОВИЧ, паспорт 11 11 111111"
 	name1Start := idx(t, text, "ТЕСТОВ ТЕСТ ТЕСТОВИЧ")
