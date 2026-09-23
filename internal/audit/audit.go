@@ -25,6 +25,8 @@ const (
 	OpTokenize   Operation = "tokenize"
 	OpDetokenize Operation = "detokenize"
 	OpProcess    Operation = "process"
+	OpRuntime    Operation = "runtime"
+	OpRevoke     Operation = "revoke"
 )
 
 // Result is the operation outcome.
