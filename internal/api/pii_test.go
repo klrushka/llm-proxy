@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/klrushka/llm-proxy/internal/process"
 )
 
 func doJSONRequest(t *testing.T, mux *http.ServeMux, method, path, body string) *httptest.ResponseRecorder {
@@ -120,6 +122,127 @@ func TestDetectMalformedJSON(t *testing.T) {
 	rec := doJSONRequest(t, mux, http.MethodPost, "/v1/pii/detect", `{not json`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+// TestOversizedBodyReturns413NoOperation proves that a body exceeding the 8 MiB
+// limit returns a fixed safe 413, never invokes the downstream operation, and
+// never reflects a synthetic canary from the oversized body.
+func TestOversizedBodyReturns413NoOperation(t *testing.T) {
+	const canary = "OVERSIZED_CANARY_99999"
+	called := false
+	h := PIIHandlers{
+		Detect: func(_ context.Context, _ DetectRequest) (DetectResponse, error) {
+			called = true
+			return DetectResponse{}, nil
+		},
+	}
+	mux := NewRouter(nil, nil, WithPIIHandlers(h))
+
+	// A valid JSON prefix followed by enough padding to exceed 8 MiB.
+	body := `{"text":"` + canary + `","request_id":"r1"}` + strings.Repeat(" ", maxRequestBodyBytes)
+	rec := doJSONRequest(t, mux, http.MethodPost, "/v1/pii/detect", body)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusRequestEntityTooLarge)
+	}
+	if called {
+		t.Error("operation called for oversized body")
+	}
+	var errResp errorResponse
+	decodeJSONResponse(t, rec, &errResp)
+	if errResp.Error != "request body too large" {
+		t.Errorf("error = %q, want %q", errResp.Error, "request body too large")
+	}
+	if strings.Contains(rec.Body.String(), canary) {
+		t.Errorf("body leaks oversized canary: %q", rec.Body.String())
+	}
+}
+
+// TestOversizedTrailingContentReturns413 proves that a valid first JSON value
+// followed by oversized trailing content is rejected with 413 and the operation
+// is not invoked.
+func TestOversizedTrailingContentReturns413(t *testing.T) {
+	called := false
+	h := PIIHandlers{
+		Detect: func(_ context.Context, _ DetectRequest) (DetectResponse, error) {
+			called = true
+			return DetectResponse{}, nil
+		},
+	}
+	mux := NewRouter(nil, nil, WithPIIHandlers(h))
+
+	// A valid first JSON object followed by a huge valid JSON string that
+	// pushes the total body over the 8 MiB limit.
+	body := `{"text":"x","request_id":"r1"}` + `"` + strings.Repeat("a", maxRequestBodyBytes) + `"`
+	rec := doJSONRequest(t, mux, http.MethodPost, "/v1/pii/detect", body)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusRequestEntityTooLarge)
+	}
+	if called {
+		t.Error("operation called for oversized trailing content")
+	}
+	var errResp errorResponse
+	decodeJSONResponse(t, rec, &errResp)
+	if errResp.Error != "request body too large" {
+		t.Errorf("error = %q, want %q", errResp.Error, "request body too large")
+	}
+}
+
+// TestOversizedBodyAllJSONRoutes proves every JSON data route that uses
+// decodeBody rejects an oversized body with 413 and does not invoke its
+// operation.
+func TestOversizedBodyAllJSONRoutes(t *testing.T) {
+	called := false
+	h := PIIHandlers{
+		Detect: func(_ context.Context, _ DetectRequest) (DetectResponse, error) {
+			called = true
+			return DetectResponse{}, nil
+		},
+		Tokenize: func(_ context.Context, _ TokenizeRequest) (TokenizeResponse, error) {
+			called = true
+			return TokenizeResponse{}, nil
+		},
+		Detokenize: func(_ context.Context, _ DetokenizeRequest) (DetokenizeResponse, error) {
+			called = true
+			return DetokenizeResponse{}, nil
+		},
+	}
+	mux := NewRouter(nil, nil, WithPIIHandlers(h), WithProcess(ProcessFunc(func(_ context.Context, _ process.Request) (process.Response, error) {
+		called = true
+		return process.Response{}, nil
+	})), WithRuntime(RuntimeFunc(func(_ context.Context, _ RuntimeRequest) (RuntimeResponse, error) {
+		called = true
+		return RuntimeResponse{}, nil
+	})))
+
+	cases := []struct {
+		name string
+		path string
+		body string
+	}{
+		{"detect", "/v1/pii/detect", `{"text":"x"}`},
+		{"tokenize", "/v1/pii/tokenize", `{"text":"x","scope_id":"s1"}`},
+		{"detokenize", "/v1/pii/detokenize", `{"text":"x","scope_id":"s1","mode":"strict"}`},
+		{"process", "/process", `{"payload":"x","payload_id":"p1"}`},
+		{"runtime", "/v1/runtime/chat", `{"text":"x","scope_id":"s1"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			called = false
+			body := tc.body + strings.Repeat(" ", maxRequestBodyBytes)
+			rec := doJSONRequest(t, mux, http.MethodPost, tc.path, body)
+			if rec.Code != http.StatusRequestEntityTooLarge {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusRequestEntityTooLarge)
+			}
+			if called {
+				t.Error("operation called for oversized body")
+			}
+			var errResp errorResponse
+			decodeJSONResponse(t, rec, &errResp)
+			if errResp.Error != "request body too large" {
+				t.Errorf("error = %q, want %q", errResp.Error, "request body too large")
+			}
+		})
 	}
 }
 

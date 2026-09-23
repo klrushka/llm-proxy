@@ -8,10 +8,17 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
 )
+
+// maxRequestBodyBytes bounds the JSON body accepted by every route that uses
+// decodeBody. It is a fixed resource boundary independent of any per-route
+// configuration. Exceeding it returns HTTP 413 with a fixed safe body and the
+// downstream operation is never invoked.
+const maxRequestBodyBytes = 8 << 20 // 8 MiB
 
 // DetectFunc performs PII detection for a detect request.
 type DetectFunc func(ctx context.Context, req DetectRequest) (DetectResponse, error)
@@ -218,17 +225,30 @@ func handleRevokeScope(op RevokeScopeFunc) http.HandlerFunc {
 	}
 }
 
-// decodeBody decodes a JSON request body into dst. On malformed JSON it
-// writes a safe 400 and returns false. After decoding dst it requires the
+// decodeBody decodes a JSON request body into dst. The body is bounded by
+// maxRequestBodyBytes via http.MaxBytesReader; an oversized body returns a
+// fixed safe 413 and never invokes the downstream operation. On malformed JSON
+// it writes a safe 400 and returns false. After decoding dst it requires the
 // body to contain no further JSON value; trailing whitespace is allowed, but
 // any second JSON value or non-whitespace trailing content is rejected.
 func decodeBody(w http.ResponseWriter, r *http.Request, dst any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	dec := json.NewDecoder(r.Body)
 	if err := dec.Decode(dst); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeJSONError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return false
+		}
 		writeJSONError(w, http.StatusBadRequest, "invalid JSON body")
 		return false
 	}
 	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeJSONError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return false
+		}
 		writeJSONError(w, http.StatusBadRequest, "invalid JSON body")
 		return false
 	}
