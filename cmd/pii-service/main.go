@@ -129,7 +129,7 @@ func run() error {
 		return fmt.Errorf("model client: %w", err)
 	}
 
-	pipe := api.NewPipeline(modelDetector(client, reg), p, issuer, v)
+	pipe := api.NewPipeline(modelDetectorWithCache(client, reg, regMetrics.RecordNERCache), p, issuer, v)
 	handlers := pipe.Handlers()
 
 	// The /process masker is the real pipeline tokenize path. A model-worker
@@ -452,7 +452,11 @@ func buildRouter(cfg config.Config, pipe *api.Pipeline, handlers api.PIIHandlers
 // UTF-8 byte span match against the Go document validators; invalid structural
 // values are dropped rather than promoted.
 func modelDetector(client *modelclient.Client, reg *detection.Registry) api.ModelDetector {
-	return func(ctx context.Context, text string) ([]detection.Candidate, error) {
+	return modelDetectorWithCache(client, reg, nil)
+}
+
+func modelDetectorWithCache(client *modelclient.Client, reg *detection.Registry, report func(string)) api.ModelDetector {
+	core := func(ctx context.Context, text string) ([]detection.Candidate, error) {
 		entities, err := client.InferBounded(ctx, text, windowOverlapTokens, windowConcurrency)
 		if err != nil {
 			// Keep the modelclient classification for /process and add the
@@ -496,6 +500,23 @@ func modelDetector(client *modelclient.Client, reg *detection.Registry) api.Mode
 			})
 		}
 		return candidates, nil
+	}
+	if client.Mode() != modelclient.ModeFull {
+		return core
+	}
+	// The cache belongs to this one immutable client/configuration. Changing
+	// mode, endpoints, models, registry or window settings creates a new cache.
+	domain := fmt.Sprintf("%s|rubert-base-pii-ner|ru-pii-ner-gliner2.5|overlap=%d|concurrency=%d", client.Mode(), windowOverlapTokens, windowConcurrency)
+	cache, err := newNERCache(domain)
+	if err != nil {
+		return core
+	}
+	return func(ctx context.Context, text string) ([]detection.Candidate, error) {
+		spans, err := cache.detect(ctx, text, core, report)
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, fmt.Errorf("%w: %w", api.ErrModelUnavailable, err)
+		}
+		return spans, err
 	}
 }
 

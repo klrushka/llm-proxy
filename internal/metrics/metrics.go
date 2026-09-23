@@ -42,6 +42,7 @@ type Metrics struct {
 	clientDuration *prometheus.HistogramVec
 	entities       *prometheus.CounterVec
 	inputTokens    prometheus.Counter
+	nerCache       *prometheus.CounterVec
 	entityTypes    map[string]struct{}
 }
 
@@ -105,13 +106,31 @@ func New(opts Options) *Metrics {
 		Name: "pii_input_tokens_total",
 		Help: "Whitespace-separated tokens submitted to the detection pipeline.",
 	})
+	m.nerCache = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pii_ner_cache_requests_total",
+		Help: "Full NER requests by bounded cache outcome.",
+	}, []string{"outcome"})
+	for _, outcome := range []string{"hit", "miss", "coalesced", "uncached"} {
+		m.nerCache.WithLabelValues(outcome)
+	}
 	m.entityTypes = make(map[string]struct{}, len(opts.EntityTypes))
 	for _, t := range opts.EntityTypes {
 		m.entityTypes[t] = struct{}{}
 		m.entities.WithLabelValues(t)
 	}
-	reg.MustRegister(m.serverDuration, m.serverActive, m.serverBodySize, m.clientDuration, m.entities, m.inputTokens)
+	reg.MustRegister(m.serverDuration, m.serverActive, m.serverBodySize, m.clientDuration, m.entities, m.inputTokens, m.nerCache)
 	return m
+}
+
+// RecordNERCache counts only fixed outcome labels, never text or IDs.
+func (m *Metrics) RecordNERCache(outcome string) {
+	if m == nil {
+		return
+	}
+	switch outcome {
+	case "hit", "miss", "coalesced", "uncached":
+		m.nerCache.WithLabelValues(outcome).Inc()
+	}
 }
 
 // Middleware returns the outer HTTP instrumentation. route maps a request to

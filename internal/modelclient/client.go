@@ -79,6 +79,9 @@ type Client struct {
 	globalSem     chan struct{}
 }
 
+// Mode returns the immutable model mode selected when the client was built.
+func (c *Client) Mode() Mode { return c.mode }
+
 // Option configures a Client.
 type Option func(*http.Client)
 
