@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/klrushka/llm-proxy/internal/detection"
 )
@@ -20,27 +21,26 @@ var pinRe = regexp.MustCompile(`\d{4}`)
 
 // cvvContexts are the explicit local context words that classify a three-digit
 // run as a card CVV. They are stored lowercase; matching is case-insensitive.
-var cvvContexts = []string{"cvv", "cvc", "код безопасности"}
+var cvvContexts = []string{"cvv", "cvc", "cvv-код", "код безопасности"}
 
 // pinContexts are the explicit local context words that classify a four-digit
 // run as a card PIN. They are stored lowercase; matching is case-insensitive.
 var pinContexts = []string{"pin", "пин", "пин-код"}
 
 // cardholderNameWord matches a single personal-name word in Russian or Latin,
-// in title case or all caps, with an optional internal hyphen. Title case
-// requires an uppercase letter followed by at least one lowercase letter; all
-// caps requires at least two uppercase letters. Lowercase prose, mixed-case
-// words and single-letter initials are intentionally not matched.
-const cardholderNameWord = `(?:[А-ЯЁ]{2,}(?:-[А-ЯЁ]{2,})*|[А-ЯЁ][а-яё]+(?:-[А-ЯЁ][а-яё]+)*|[A-Z]{2,}(?:-[A-Z]{2,})*|[A-Z][a-z]+(?:-[A-Z][a-z]+)*)`
+// in any case, with an optional internal hyphen. Matching is case-insensitive,
+// so lowercase and mixed-case names are accepted.
+const cardholderNameWord = `(?:[А-ЯЁа-яё]+(?:-[А-ЯЁа-яё]+)*|[A-Za-z]+(?:-[A-Za-z]+)*)`
 
 // cardholderNameValue matches a deliberately small 2-4 word personal-name
 // grammar, words separated by single spaces or tabs.
 const cardholderNameValue = cardholderNameWord + `(?:[ \t]+` + cardholderNameWord + `){1,3}`
 
 // cardholderRe matches an explicit cardholder marker followed by a name value.
-// The marker is matched case-insensitively; the name value is matched
-// case-sensitively so lowercase prose is rejected. The value span is captured.
-var cardholderRe = regexp.MustCompile(`(?i)(?:cardholder name|cardholder|держатель карты|имя держателя|владелец карты|имя на карте)(?-i)[ \t:]*` + `(` + cardholderNameValue + `)`)
+// A real separator (whitespace or a colon with optional surrounding whitespace)
+// is required after the marker. The marker and the name value are matched
+// case-insensitively. The value span is captured.
+var cardholderRe = regexp.MustCompile(`(?i)(?:cardholder name|cardholder|держатель карты|имя держателя|владелец карты|имя на карте)[ \t:]+` + `(` + cardholderNameValue + `)`)
 
 // cardholderStopMarkers are the known following payment markers that terminate
 // a cardholder name value. They are stored lowercase; matching is
@@ -112,20 +112,25 @@ func pinCandidates(text string) []detection.Candidate {
 }
 
 // cardholderCandidates finds marker-based cardholder names and emits the value
-// span, not the marker. The value is trimmed at the first known payment marker
-// and must retain 2-4 name words.
+// span, not the marker. The value is trimmed at the first known payment marker,
+// must retain 2-4 name words with name-like casing for 3-4 word forms, and must
+// be terminated by a right boundary (end-of-input, punctuation/newline, or a
+// known payment marker).
 func cardholderCandidates(text string) []detection.Candidate {
 	var out []detection.Candidate
 	for _, loc := range cardholderRe.FindAllStringSubmatchIndex(text, -1) {
-		if loc[0] > 0 && isLetterByte(text[loc[0]-1]) {
+		if !markerBoundaryOK(text, loc[0]) {
 			continue
 		}
 		start, end := loc[2], loc[3]
 		if start < 0 {
 			continue
 		}
-		end, ok := trimCardholderValue(text, start, end)
-		if !ok {
+		end, words := trimCardholderValue(text, start, end)
+		if !cardholderNameOK(text, start, end, words) {
+			continue
+		}
+		if !valueTerminatedOK(text, end, cardholderStopMarkers) {
 			continue
 		}
 		out = append(out, validatedCandidate(detection.TypeCardholderName, start, end))
@@ -134,10 +139,10 @@ func cardholderCandidates(text string) []detection.Candidate {
 }
 
 // trimCardholderValue trims the value span so it stops at the first known
-// payment marker word, returning the trimmed end offset and whether 2-4 name
-// words remain. Trailing spaces or tabs are removed from the resulting end so
+// payment marker word, returning the trimmed end offset and the number of name
+// words collected. Trailing spaces or tabs are removed from the resulting end so
 // the value span is exact.
-func trimCardholderValue(text string, start, end int) (int, bool) {
+func trimCardholderValue(text string, start, end int) (int, int) {
 	i := start
 	words := 0
 	for i < end {
@@ -161,11 +166,67 @@ func trimCardholderValue(text string, start, end int) (int, bool) {
 	for end > start && (text[end-1] == ' ' || text[end-1] == '\t') {
 		end--
 	}
-	return end, words >= 2 && words <= 4
+	return end, words
 }
 
-// isLetterByte reports whether b is an ASCII letter or a byte of a multi-byte
-// (Cyrillic) UTF-8 character. Used only for marker boundary rejection.
-func isLetterByte(b byte) bool {
-	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= 0x80
+// cardholderNameOK reports whether the trimmed cardholder value is acceptable:
+// exactly two words in any casing, or 3-4 words where every word uses name-like
+// casing (Title or UPPER). Fully lowercase 3-4 word phrases are rejected so an
+// arbitrary prose phrase is not masked as a name.
+func cardholderNameOK(text string, start, end, words int) bool {
+	if words < 2 || words > 4 {
+		return false
+	}
+	if words == 2 {
+		return true
+	}
+	i := start
+	for i < end {
+		for i < end && (text[i] == ' ' || text[i] == '\t') {
+			i++
+		}
+		if i >= end {
+			break
+		}
+		j := i
+		for j < end && text[j] != ' ' && text[j] != '\t' {
+			j++
+		}
+		if !isNameLikeWord(text[i:j]) {
+			return false
+		}
+		i = j
+	}
+	return true
+}
+
+// isNameLikeWord reports whether a cardholder name word uses name-like casing:
+// all uppercase, or title case (first letter uppercase, rest lowercase), applied
+// to each hyphen-separated part.
+func isNameLikeWord(word string) bool {
+	for _, part := range strings.Split(word, "-") {
+		if part == "" {
+			continue
+		}
+		runes := []rune(part)
+		allUpper := true
+		for _, r := range runes {
+			if !unicode.IsUpper(r) {
+				allUpper = false
+				break
+			}
+		}
+		if allUpper {
+			continue
+		}
+		if !unicode.IsUpper(runes[0]) {
+			return false
+		}
+		for _, r := range runes[1:] {
+			if !unicode.IsLower(r) {
+				return false
+			}
+		}
+	}
+	return true
 }

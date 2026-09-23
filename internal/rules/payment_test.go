@@ -41,6 +41,9 @@ func TestDetectPaymentSecretsCVVPositive(t *testing.T) {
 		{"cvc lowercase context", "cvc 123", "123"},
 		{"код безопасности context", "код безопасности: 123", "123"},
 		{"код безопасности uppercase", "КОД БЕЗОПАСНОСТИ 123", "123"},
+		{"cvv-код context", "CVV-код: 123", "123"},
+		{"cvv-код lowercase context", "cvv-код: 123", "123"},
+		{"cvv-код uppercase context", "CVV-КОД: 123", "123"},
 		{"tab separator", "CVV:\t123", "123"},
 		{"cyrillic prefix", "Данные: CVV: 123", "123"},
 	}
@@ -125,6 +128,13 @@ func TestDetectPaymentSecretsCardholderPositive(t *testing.T) {
 		{"three word name", "Cardholder: Ivan Ivanov Petrov", "Ivan Ivanov Petrov"},
 		{"four word name", "Cardholder: Ivan Ivanov Petrov Sidorov", "Ivan Ivanov Petrov Sidorov"},
 		{"cyrillic prefix", "Данные: Cardholder: Ivan Ivanov", "Ivan Ivanov"},
+		{"lowercase cyrillic", "cardholder: иван иванов", "иван иванов"},
+		{"lowercase latin", "cardholder: ivan ivanov", "ivan ivanov"},
+		{"mixed case cyrillic", "Cardholder: ИвАН Иванов", "ИвАН Иванов"},
+		{"mixed case latin", "Cardholder: IvAn IvAnOv", "IvAn IvAnOv"},
+		{"lowercase cyrillic hyphen", "Держатель карты: анна-мария петрова", "анна-мария петрова"},
+		{"mixed case latin hyphen", "Cardholder: Jean-Pierre dupont", "Jean-Pierre dupont"},
+		{"three word upper case", "Cardholder: IVAN IVANOV PETROV", "IVAN IVANOV PETROV"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -192,10 +202,14 @@ func TestDetectPaymentSecretsNegative(t *testing.T) {
 		{"pin digit embedded", "PIN: 94567"},
 		{"pin context part of larger word", "XPIN: 4567"},
 		{"plain name without cardholder context", "Иван Иванов"},
-		{"lowercase prose", "cardholder: иван иванов"},
 		{"single word name", "Cardholder: Ivan"},
 		{"marker part of larger word", "mycardholder Ivan Ivanov"},
-		{"mixed case name rejected", "Cardholder: ИвАН Иванов"},
+		{"no separator after marker", "cardholderivan ivanov"},
+		{"arbitrary phrase masked as name", "Cardholder: ivan ivanov lives nearby the park"},
+		{"five continuous name words", "Cardholder: ivan ivanov petrov sidorov ivanov"},
+		{"lowercase three word phrase", "Cardholder: ivan ivanov petrov"},
+		{"lowercase four word phrase", "Cardholder: ivan ivanov lives nearby"},
+		{"mixed case three word phrase", "Cardholder: ИвАН Иванов Петров"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
