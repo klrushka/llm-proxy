@@ -253,10 +253,12 @@ func TestOperationModelUnavailableOwnerWaiterRetryShareClassification(t *testing
 	release := make(chan struct{})
 	composed := WithRulesOnlyFallback(false,
 		func(_ context.Context, p string) (string, error) {
-			calls.Add(1)
-			close(entered)
-			<-release
-			return "", fmt.Errorf("worker down: %w", ErrModelUnavailable)
+			if calls.Add(1) == 1 {
+				close(entered)
+				<-release
+				return "", fmt.Errorf("worker down: %w", ErrModelUnavailable)
+			}
+			return "masked synthetic", nil
 		},
 		func(_ context.Context, _ string) (string, error) {
 			return "rules", nil
@@ -320,14 +322,11 @@ func TestOperationModelUnavailableOwnerWaiterRetryShareClassification(t *testing
 	}
 
 	retry, err := op.Handle(context.Background(), Request{Payload: payload, PayloadID: payloadID})
-	if !errors.Is(err, ErrModelUnavailable) {
-		t.Errorf("retry error = %v, want ErrModelUnavailable", err)
+	if err != nil || retry.Result != "masked synthetic" {
+		t.Errorf("retry = (%q, %v), want successful remask", retry.Result, err)
 	}
-	if retry.Result != "" {
-		t.Errorf("retry result = %q, want empty", retry.Result)
-	}
-	if got := calls.Load(); got != 1 {
-		t.Errorf("composed mask calls after retry = %d, want 1 (no re-masking)", got)
+	if got := calls.Load(); got != 2 {
+		t.Errorf("composed mask calls after retry = %d, want 2", got)
 	}
 }
 

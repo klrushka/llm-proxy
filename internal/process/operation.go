@@ -42,49 +42,33 @@ func NewOperation(store *Store, mask MaskFunc) *Operation {
 // ready. A retry of the same original returns the stored result without
 // re-masking. Passing the previously issued result (mask) restores the
 // original without re-masking and is a repeatable read that does not change
-// the record. A masking error fails closed (no plaintext) and expires the
-// claim. Concurrent first requests for the same payload_id are coordinated by
+// the record. A masking error fails closed (no plaintext) and expires that
+// attempt. A later retry of the same original may replace a transient model
+// or cancellation failure. Concurrent requests are coordinated by
 // a single writer: only the goroutine that wins the claim invokes the masker,
 // and the others wait for the winner to resolve before classifying their
 // payload against the stored record.
 func (o *Operation) Handle(ctx context.Context, req Request) (Response, error) {
-	rec, err := o.store.Get(req.PayloadID)
-	switch {
-	case errors.Is(err, ErrNotFound):
-		return o.handleFirst(ctx, req)
-	case err != nil:
+	e, owner, err := o.store.begin(req.PayloadID, req.Payload)
+	if err != nil {
 		return Response{}, err
 	}
-
-	switch rec.State {
-	case StateReady:
-		return o.classifyReady(req, rec)
-	case StateClaim:
-		// A concurrent first request holds the claim. Wait for it to resolve,
-		// then classify against the resolved record.
-		return o.handleWaiter(ctx, req)
-	case StateExpired:
-		// A later retry that encounters an already-expired record returns the
-		// recorded safe classification. If no classified operation failure was
-		// recorded, preserve the existing invalid-transition behavior.
-		return Response{}, o.store.expiredFailure(req.PayloadID)
-	default:
-		return Response{}, ErrInvalidTransition
+	if owner {
+		return o.handleFirst(ctx, req, e)
 	}
+	rec, err := o.store.snapshotEntry(e)
+	if err != nil {
+		return Response{}, err
+	}
+	if rec.State == StateClaim {
+		return o.handleWaiter(ctx, req, e)
+	}
+	return o.classifyReady(req, rec)
 }
 
-// handleFirst is the single-writer path for a new payload_id. It wins the
-// claim, invokes the masker exactly once, and resolves the claim to ready or
-// expired. If it loses the claim race to a concurrent first request, it waits
-// for the winner to resolve instead of surfacing ErrExists.
-func (o *Operation) handleFirst(ctx context.Context, req Request) (Response, error) {
-	if _, err := o.store.CreateClaim(req.PayloadID, req.Payload); err != nil {
-		if errors.Is(err, ErrExists) {
-			return o.handleWaiter(ctx, req)
-		}
-		return Response{}, err
-	}
-
+// handleFirst is the single-writer path for one claim generation. It invokes
+// the masker once and resolves only its own entry to ready or expired.
+func (o *Operation) handleFirst(ctx context.Context, req Request, e *entry) (Response, error) {
 	result, err := o.mask(ctx, req.Payload)
 	if err != nil {
 		// Fail closed: never return plaintext or the dependency error (which
@@ -98,8 +82,10 @@ func (o *Operation) handleFirst(ctx context.Context, req Request) (Response, err
 			failErr = ErrVaultUnavailable
 		case errors.Is(err, ErrModelUnavailable):
 			failErr = ErrModelUnavailable
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			failErr = ErrModelUnavailable
 		}
-		if expireErr := o.store.expireClaim(req.PayloadID, failErr); expireErr != nil {
+		if expireErr := o.store.failEntry(e, failErr); expireErr != nil {
 			// The claim could not be safely expired; fail closed with an empty
 			// response and the store error rather than leaking the mask error.
 			return Response{}, expireErr
@@ -107,31 +93,23 @@ func (o *Operation) handleFirst(ctx context.Context, req Request) (Response, err
 		return Response{}, failErr
 	}
 
-	if err := o.store.CompleteClaim(req.PayloadID, result); err != nil {
+	if err := o.store.completeEntry(e, result); err != nil {
 		return Response{}, err
 	}
 	return Response{Result: result}, nil
 }
 
-// handleWaiter blocks until the in-flight claim for req.PayloadID resolves,
-// then classifies the request against the resolved record. It never invokes
-// the masker. If the winning claim expired because masking failed, it fails
-// closed with the recorded safe classification and an empty response.
-func (o *Operation) handleWaiter(ctx context.Context, req Request) (Response, error) {
-	rec, err := o.store.WaitReady(ctx, req.PayloadID)
+// handleWaiter blocks on the exact claim generation it observed, so a later
+// retry cannot turn the old attempt's failure into a new result.
+func (o *Operation) handleWaiter(ctx context.Context, req Request, e *entry) (Response, error) {
+	rec, err := o.store.waitEntry(ctx, e)
 	if err != nil {
+		if req.Payload != e.rec.Original && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			return Response{}, ErrConflict
+		}
 		return Response{}, err
 	}
-	switch rec.State {
-	case StateReady:
-		return o.classifyReady(req, rec)
-	case StateExpired:
-		// The winning claim failed closed; expired is terminal and must not be
-		// re-claimed from this call. Return the recorded safe classification.
-		return Response{}, o.store.expiredFailure(req.PayloadID)
-	default:
-		return Response{}, ErrInvalidTransition
-	}
+	return o.classifyReady(req, rec)
 }
 
 // classifyReady applies the ready-record semantics shared by the direct path

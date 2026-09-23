@@ -46,7 +46,7 @@ type Store struct {
 	records map[string]*entry
 }
 
-// entry is the private per-payload_id store entry. It pairs the domain Record
+// entry is the private per-attempt store entry. It pairs the domain Record
 // with a done channel used to coordinate concurrent first requests. The done
 // channel is closed exactly once when the record leaves StateClaim (to ready
 // or expired), waking any waiters. It is never exposed through Record. failErr
@@ -61,6 +61,72 @@ type entry struct {
 // NewStore returns an empty Store.
 func NewStore() *Store {
 	return &Store{records: make(map[string]*entry)}
+}
+
+// begin binds one operation to an exact entry generation. A transient failed
+// generation can be replaced only by its original payload. Existing waiters
+// keep their old entry and therefore receive that attempt's failure even if a
+// later retry has already started.
+func (s *Store) begin(payloadID, original string) (*entry, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.records[payloadID]
+	if ok {
+		if e.rec.State == StateExpired && original != e.rec.Original {
+			return nil, false, ErrConflict
+		}
+		if e.rec.State != StateExpired || e.failErr != ErrModelUnavailable {
+			return e, false, nil
+		}
+	}
+	e = &entry{rec: &Record{PayloadID: payloadID, State: StateClaim, Original: original}, done: make(chan struct{})}
+	s.records[payloadID] = e
+	return e, true, nil
+}
+
+func (s *Store) snapshotEntry(e *entry) (*Record, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if e.rec.State == StateExpired {
+		if e.failErr == nil {
+			return nil, ErrInvalidTransition
+		}
+		return nil, e.failErr
+	}
+	return e.rec.snapshot(), nil
+}
+
+func (s *Store) waitEntry(ctx context.Context, e *entry) (*Record, error) {
+	select {
+	case <-e.done:
+		return s.snapshotEntry(e)
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (s *Store) completeEntry(e *entry, result string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.records[e.rec.PayloadID] != e || e.rec.State != StateClaim {
+		return ErrInvalidTransition
+	}
+	e.rec.Result = result
+	e.rec.State = StateReady
+	close(e.done)
+	return nil
+}
+
+func (s *Store) failEntry(e *entry, failErr error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.records[e.rec.PayloadID] != e || e.rec.State != StateClaim {
+		return ErrInvalidTransition
+	}
+	e.failErr = failErr
+	e.rec.State = StateExpired
+	close(e.done)
+	return nil
 }
 
 // CreateClaim atomically creates a new record in claim state for payload_id.
