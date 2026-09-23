@@ -13,15 +13,12 @@ import (
 	"github.com/klrushka/llm-proxy/internal/audit"
 	"github.com/klrushka/llm-proxy/internal/config"
 	"github.com/klrushka/llm-proxy/internal/metrics"
-	"github.com/klrushka/llm-proxy/internal/policy"
 	"github.com/klrushka/llm-proxy/internal/process"
 )
 
-// newAuditProductionHandler builds the full production composition: the real
-// router wired to the real pipeline, wrapped by the access-control middleware
-// and then the outer audit middleware, exactly as run() does. It returns the
-// handler and a capturing audit logger.
-func newAuditProductionHandler(t *testing.T, profile, consumersJSON string) (http.Handler, *bytes.Buffer) {
+// newAuditHandler builds the public router wrapped by the outer audit
+// middleware, exactly as run() does.
+func newAuditHandler(t *testing.T) (http.Handler, *bytes.Buffer) {
 	t.Helper()
 	pipe, handlers := newTestPipeline(t)
 	op := process.NewOperation(process.NewStore(), func(ctx context.Context, payload string) (string, error) {
@@ -37,25 +34,9 @@ func newAuditProductionHandler(t *testing.T, profile, consumersJSON string) (htt
 	if err != nil {
 		t.Fatalf("buildRouter() error = %v", err)
 	}
-	var resolver *policy.Resolver
-	var consumers *config.Consumers
-	if consumersJSON != "" {
-		consumers = loadConsumers(t, consumersJSON)
-		resolver = api.NewProductionResolver(consumers)
-	}
-	access := api.NewConsumerAccess(profile, resolver, consumers)
 	var buf bytes.Buffer
 	logger := audit.New(&buf)
-	return audit.Middleware(logger, audit.ModelMode(cfg.ModelMode))(access.Middleware(handler)), &buf
-}
-
-// productionConsumersJSON builds a consumers JSON with two registered systems:
-// sys-a allows EMAIL with demasking; sys-b allows PHONE without demasking.
-func productionConsumersJSON() string {
-	return `[
-		{"system_id":"sys-a","enabled":true,"api_key_sha256":"` + sha256Hex("key-a") + `","enabled_types":["EMAIL"],"allow_demasking":true},
-		{"system_id":"sys-b","enabled":true,"api_key_sha256":"` + sha256Hex("key-b") + `","enabled_types":["PHONE"],"allow_demasking":false}
-	]`
+	return audit.Middleware(logger, audit.ModelMode(cfg.ModelMode))(handler), &buf
 }
 
 // auditLines returns the non-empty audit JSON lines captured in buf.
@@ -95,7 +76,7 @@ func assertNoLeak(t *testing.T, buf *bytes.Buffer, markers ...string) {
 // plaintext values or the client request_id, and the public response still
 // echoes the client request_id unchanged.
 func TestAuditProductionDetectEmitsOneEventWithMetadata(t *testing.T) {
-	handler, buf := newAuditProductionHandler(t, config.AccessProfileProduction, productionConsumersJSON())
+	handler, buf := newAuditHandler(t)
 	const (
 		fullName  = "Иванов Иван Иванович"
 		phone     = "+7 911 222-33-44"
@@ -146,7 +127,7 @@ func TestAuditProductionDetectEmitsOneEventWithMetadata(t *testing.T) {
 // and never leaks the synthetic plaintext, the client request_id, the scope_id
 // or the issued token.
 func TestAuditProductionTokenizeEmitsOneEventWithMetadata(t *testing.T) {
-	handler, buf := newAuditProductionHandler(t, config.AccessProfileProduction, productionConsumersJSON())
+	handler, buf := newAuditHandler(t)
 	const (
 		fullName  = "Петров Пётр Петрович"
 		phone     = "+7 922 333-44-55"
@@ -195,7 +176,7 @@ func TestAuditProductionTokenizeEmitsOneEventWithMetadata(t *testing.T) {
 // the payload_id (the old process-only audit is removed from production
 // composition).
 func TestAuditProductionProcessEmitsOneEventWithMetadata(t *testing.T) {
-	handler, buf := newAuditProductionHandler(t, config.AccessProfileChecker, "")
+	handler, buf := newAuditHandler(t)
 	const (
 		fullName  = "Сидоров Сидор Сидорович"
 		phone     = "+7 933 444-55-66"
@@ -231,15 +212,10 @@ func TestAuditProductionProcessEmitsOneEventWithMetadata(t *testing.T) {
 	assertNoLeak(t, buf, fullName, phone, email, payloadID)
 }
 
-// TestAuditProductionPostPolicyMetadata proves that the audit carries post-policy
-// reporting metadata, not raw pre-policy candidates: for an EMAIL-only consumer
-// with PHONE appearing before EMAIL in the text, the event reports both types in
-// document order with personal_flags [false, true] and reason_codes containing
-// type_disabled_by_policy for the disabled PHONE.
-func TestAuditProductionPostPolicyMetadata(t *testing.T) {
-	handler, buf := newAuditProductionHandler(t, config.AccessProfileProduction, productionConsumersJSON())
-	// PHONE appears before EMAIL in document order. sys-a allows only EMAIL, so
-	// PHONE is disabled by policy and becomes non-personal reporting metadata.
+// TestAuditPublicPolicyMetadata proves the public full-type policy marks both
+// detected synthetic entities as personal in document order.
+func TestAuditPublicPolicyMetadata(t *testing.T) {
+	handler, buf := newAuditHandler(t)
 	const (
 		phone = "+7 944 555-66-77"
 		email = "postpolicy.audit@example.com"
@@ -267,15 +243,13 @@ func TestAuditProductionPostPolicyMetadata(t *testing.T) {
 	if m["entity_count"] != float64(2) {
 		t.Errorf("entity_count = %v, want 2", m["entity_count"])
 	}
-	// personal_flags must be in document order: PHONE (disabled, non-personal)
-	// first, then EMAIL (personal).
 	flags := toBools(t, m["personal_flags"])
-	if len(flags) != 2 || flags[0] != false || flags[1] != true {
-		t.Errorf("personal_flags = %v, want [false true] in document order", flags)
+	if len(flags) != 2 || !flags[0] || !flags[1] {
+		t.Errorf("personal_flags = %v, want [true true] in document order", flags)
 	}
 	reasons := toStrings(t, m["reason_codes"])
-	if !containsAll(reasons, "type_disabled_by_policy") {
-		t.Errorf("reason_codes = %v, want type_disabled_by_policy", reasons)
+	if containsAll(reasons, "type_disabled_by_policy") {
+		t.Errorf("reason_codes = %v, must not contain type_disabled_by_policy", reasons)
 	}
 	assertNoLeak(t, buf, phone, email)
 }
@@ -287,7 +261,7 @@ func TestAuditProductionPostPolicyMetadata(t *testing.T) {
 // and the accumulated audit output never contains the original, the token or
 // the scope.
 func TestAuditProductionLifecycleTokenizeDetokenizeRevoke(t *testing.T) {
-	handler, buf := newAuditProductionHandler(t, config.AccessProfileProduction, productionConsumersJSON())
+	handler, buf := newAuditHandler(t)
 	const (
 		email = "lifecycle.audit@example.com"
 		scope = "SCOPE_LIFECYCLE_12345"
@@ -352,13 +326,10 @@ func TestAuditProductionLifecycleTokenizeDetokenizeRevoke(t *testing.T) {
 	assertNoLeak(t, buf, email, scope, tok.TokenizedText)
 }
 
-// TestAuditProductionDemaskingDeniedEmitsOneErrorEvent proves a real production
-// 403 path: a consumer without allow_demasking calling detokenize is denied by
-// the access-control middleware, returns HTTP 403, and emits exactly one
-// detokenize error event without leaking Authorization, body, scope or token
-// markers.
-func TestAuditProductionDemaskingDeniedEmitsOneErrorEvent(t *testing.T) {
-	handler, buf := newAuditProductionHandler(t, config.AccessProfileProduction, productionConsumersJSON())
+// TestAuditPublicDetokenizeErrorEmitsOneEvent proves an unresolved token emits
+// exactly one safe error event from the public detokenization path.
+func TestAuditPublicDetokenizeErrorEmitsOneEvent(t *testing.T) {
+	handler, buf := newAuditHandler(t)
 	const (
 		authz = "Bearer key-b"
 		body  = "BODY_DEMASK_11111"
@@ -368,8 +339,8 @@ func TestAuditProductionDemaskingDeniedEmitsOneErrorEvent(t *testing.T) {
 	rec := doJSON(t, handler, http.MethodPost, "/v1/pii/detokenize",
 		`{"text":"`+token+`","scope_id":"`+scope+`","mode":"strict"}`,
 		map[string]string{"Authorization": authz})
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want %d; body = %q", rec.Code, http.StatusForbidden, rec.Body.String())
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d; body = %q", rec.Code, http.StatusInternalServerError, rec.Body.String())
 	}
 
 	lines := auditLines(buf)
@@ -386,12 +357,10 @@ func TestAuditProductionDemaskingDeniedEmitsOneErrorEvent(t *testing.T) {
 	assertNoLeak(t, buf, authz, body, scope, token)
 }
 
-// TestAuditProductionAccessDenialEmitsOneEvent proves that an access-control
-// denial (missing API key) is audited exactly once with an error result, and
-// that synthetic secret markers in the Authorization header, body, client
-// request_id, payload_id and scope_id never appear in the audit output.
-func TestAuditProductionAccessDenialEmitsOneEvent(t *testing.T) {
-	handler, buf := newAuditProductionHandler(t, config.AccessProfileProduction, productionConsumersJSON())
+// TestAuditPublicRequestIgnoresAuthorization proves an arbitrary Authorization
+// header does not deny a public request and is never copied into audit output.
+func TestAuditPublicRequestIgnoresAuthorization(t *testing.T) {
+	handler, buf := newAuditHandler(t)
 	markers := []string{
 		"Bearer AUTHZ_SECRET_11111",
 		"BODY_SECRET_22222",
@@ -402,8 +371,8 @@ func TestAuditProductionAccessDenialEmitsOneEvent(t *testing.T) {
 	body := `{"text":"BODY_SECRET_22222","request_id":"CLIENT_REQID_SECRET_33333","payload_id":"PAYLOAD_ID_SECRET_44444","scope_id":"SCOPE_ID_SECRET_55555"}`
 	rec := doJSON(t, handler, http.MethodPost, "/v1/pii/tokenize", body,
 		map[string]string{"Authorization": "Bearer AUTHZ_SECRET_11111"})
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
 
 	lines := auditLines(buf)
@@ -414,8 +383,8 @@ func TestAuditProductionAccessDenialEmitsOneEvent(t *testing.T) {
 	if m["operation"] != "tokenize" {
 		t.Errorf("operation = %v, want tokenize", m["operation"])
 	}
-	if m["result"] != "error" {
-		t.Errorf("result = %v, want error", m["result"])
+	if m["result"] != "success" {
+		t.Errorf("result = %v, want success", m["result"])
 	}
 	assertNoLeak(t, buf, markers...)
 }
@@ -423,7 +392,7 @@ func TestAuditProductionAccessDenialEmitsOneEvent(t *testing.T) {
 // TestAuditProductionMalformedJSONEmitsOneEvent proves that a malformed JSON
 // body is audited exactly once with an error result.
 func TestAuditProductionMalformedJSONEmitsOneEvent(t *testing.T) {
-	handler, buf := newAuditProductionHandler(t, config.AccessProfileProduction, productionConsumersJSON())
+	handler, buf := newAuditHandler(t)
 	rec := doJSON(t, handler, http.MethodPost, "/v1/pii/detect", `{not json`,
 		map[string]string{"Authorization": "Bearer key-a"})
 	if rec.Code != http.StatusBadRequest {
@@ -446,7 +415,7 @@ func TestAuditProductionMalformedJSONEmitsOneEvent(t *testing.T) {
 // TestAuditProductionHealthAndMetricsNotAudited proves that health and metrics
 // endpoints never produce a data audit event through the full composition.
 func TestAuditProductionHealthAndMetricsNotAudited(t *testing.T) {
-	handler, buf := newAuditProductionHandler(t, config.AccessProfileChecker, "")
+	handler, buf := newAuditHandler(t)
 	for _, path := range []string{"/health/live", "/health/ready", "/metrics"} {
 		doJSON(t, handler, http.MethodGet, path, "", nil)
 	}
@@ -459,7 +428,7 @@ func TestAuditProductionHealthAndMetricsNotAudited(t *testing.T) {
 // runtime route with an unconfigured LLM fails closed with 503 and emits
 // exactly one runtime error audit event.
 func TestAuditProductionRuntimeUnconfiguredEmitsOneErrorEvent(t *testing.T) {
-	handler, buf := newAuditProductionHandler(t, config.AccessProfileProduction, productionConsumersJSON())
+	handler, buf := newAuditHandler(t)
 	rec := doJSON(t, handler, http.MethodPost, "/v1/runtime/chat",
 		`{"text":"Клиент Иванов Иван, email ivanov@example.com","scope_id":"scope-1"}`,
 		map[string]string{"Authorization": "Bearer key-a"})

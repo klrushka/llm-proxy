@@ -1,6 +1,5 @@
-// Package audit provides the outer HTTP audit middleware. It sits outside the
-// access-control middleware so it observes access-control denials, and it
-// emits exactly one safe structured JSON event per data request. It never
+// Package audit provides the outer HTTP audit middleware. It emits exactly one
+// safe structured JSON event per data request. It never
 // records the request path, the client request_id, the body, restored text,
 // scope_id, tokens, mappings, ciphertext, keys, authorization headers or
 // internal error text. The operation is derived from a fixed method/path
@@ -23,8 +22,8 @@ var fallbackCounter atomic.Uint64
 // Middleware returns an http.Handler that wraps next with the outer audit
 // observer. For every recognized data operation it creates a context-local
 // collector, records the response status, and emits exactly one safe event
-// after next returns. Emission is deferred so a panic from the access-control
-// middleware, router or pipeline still produces exactly one error event and is
+// after next returns. Emission is deferred so a panic from the router or
+// pipeline still produces exactly one error event and is
 // then re-raised unchanged. Health and metrics endpoints are never audited. A
 // nil logger disables auditing entirely.
 func Middleware(logger *Logger, mode ModelMode) func(http.Handler) http.Handler {

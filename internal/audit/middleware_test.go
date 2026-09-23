@@ -126,9 +126,9 @@ func TestMiddlewareEmitsErrorEventOnErrorStatus(t *testing.T) {
 	}
 }
 
-// TestMiddlewareEmitsEventOnAccessDenial proves that an access-control denial
-// (simulated by a 401/403 status from the downstream) is still audited.
-func TestMiddlewareEmitsEventOnAccessDenial(t *testing.T) {
+// TestMiddlewareEmitsEventOnClientError proves a downstream 401/403 response
+// is still audited without assigning authentication semantics to middleware.
+func TestMiddlewareEmitsEventOnClientError(t *testing.T) {
 	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
 		out, _ := runAudit(t, status, nil, http.MethodPost, "/v1/pii/tokenize", "", nil)
 		lines := nonEmptyLines(out)

@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -574,13 +572,13 @@ func newTestPipeline(t *testing.T) (*api.Pipeline, api.PIIHandlers) {
 	for _, typ := range reg.Types() {
 		allowed = append(allowed, string(typ))
 	}
-	p := policy.NewPolicy(policy.DefaultConsumerID, allowed)
+	p := policy.NewPolicy(allowed)
 	pipe := api.NewPipeline(nil, p, g, v)
 	return pipe, pipe.Handlers()
 }
 
 // newPipelineWithModel builds the real pipeline with the in-memory vault, token
-// issuer, a consumer policy allowing exactly the given types, and the injected
+// issuer, a processing policy allowing exactly the given types, and the injected
 // model detector.
 func newPipelineWithModel(t *testing.T, detector api.ModelDetector, allowedTypes ...string) *api.Pipeline {
 	t.Helper()
@@ -592,7 +590,7 @@ func newPipelineWithModel(t *testing.T, detector api.ModelDetector, allowedTypes
 	if err != nil {
 		t.Fatalf("tokenization.New() error = %v", err)
 	}
-	p := policy.NewPolicy(policy.DefaultConsumerID, allowedTypes)
+	p := policy.NewPolicy(allowedTypes)
 	return api.NewPipeline(detector, p, g, v)
 }
 
@@ -680,7 +678,7 @@ func TestRuntimeMasksRubertAddressContext(t *testing.T) {
 	}
 }
 
-// TestRuntimePolicyProjection proves that consumer policy projection splits
+// TestRuntimePolicyProjection proves that processing policy projection splits
 // overlapping candidates before merge: a disabled type never changes the
 // operational winner, components, or ownership evidence of an allowed entity.
 // When FULL_NAME is disabled, the allowed CITY stays ambiguous and
@@ -937,27 +935,7 @@ func TestModelDetectorRejectsUnknownLabelFromAnyWindow(t *testing.T) {
 	}
 }
 
-// --- Access-control integration through the real router ---
-
-// sha256Hex returns the lowercase hex SHA-256 digest of s.
-func sha256Hex(s string) string {
-	sum := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(sum[:])
-}
-
-// loadConsumers builds a *config.Consumers from a consumers JSON string via
-// config.Load. It requires the vault key and production profile env vars.
-func loadConsumers(t *testing.T, consumersJSON string) *config.Consumers {
-	t.Helper()
-	t.Setenv("PII_VAULT_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
-	t.Setenv("PII_ACCESS_PROFILE", config.AccessProfileProduction)
-	t.Setenv("PII_CONSUMERS_JSON", consumersJSON)
-	cfg, err := config.Load()
-	if err != nil {
-		t.Fatalf("config.Load() error = %v", err)
-	}
-	return cfg.Consumers
-}
+// --- Public API integration through the real router ---
 
 // doJSON sends a JSON request to handler with optional headers and returns the
 // recorder.
@@ -976,12 +954,8 @@ func doJSON(t *testing.T, handler http.Handler, method, path, body string, heade
 	return rec
 }
 
-// newAccessHandler builds the real router wrapped by the access-control
-// middleware for the given profile. For the production profile it parses
-// consumersJSON and builds the production resolver. The pipeline is the real
-// rules-only pipeline with the full benchmark static policy; the middleware
-// injects the per-system policy from context.
-func newAccessHandler(t *testing.T, profile, consumersJSON string) http.Handler {
+// newPublicHandler builds the real router without incoming authorization.
+func newPublicHandler(t *testing.T) http.Handler {
 	t.Helper()
 	pipe, handlers := newTestPipeline(t)
 	op := process.NewOperation(process.NewStore(), func(ctx context.Context, payload string) (string, error) {
@@ -997,21 +971,13 @@ func newAccessHandler(t *testing.T, profile, consumersJSON string) http.Handler 
 	if err != nil {
 		t.Fatalf("buildRouter() error = %v", err)
 	}
-	var resolver *policy.Resolver
-	var consumers *config.Consumers
-	if consumersJSON != "" {
-		consumers = loadConsumers(t, consumersJSON)
-		resolver = api.NewProductionResolver(consumers)
-	}
-	access := api.NewConsumerAccess(profile, resolver, consumers)
-	return access.Middleware(handler)
+	return handler
 }
 
-// TestCheckerRouterIntegration proves the checker profile over the real router:
-// POST /process works without any header, health endpoints are open, and every
-// other functional route plus /metrics fails closed with 403.
-func TestCheckerRouterIntegration(t *testing.T) {
-	handler := newAccessHandler(t, config.AccessProfileChecker, "")
+// TestPublicRouterIntegration proves functional routes are available without
+// an Authorization header and are not gated by a checker/production profile.
+func TestPublicRouterIntegration(t *testing.T) {
+	handler := newPublicHandler(t)
 
 	rec := doJSON(t, handler, http.MethodPost, "/process",
 		`{"payload":"Клиент Иванов Иван, email ivanov@example.com","payload_id":"id-1"}`, nil)
@@ -1027,219 +993,120 @@ func TestCheckerRouterIntegration(t *testing.T) {
 	}
 
 	routes := []struct {
-		method string
-		path   string
+		method   string
+		path     string
+		body     string
+		wantCode int
 	}{
-		{http.MethodPost, "/v1/pii/detect"},
-		{http.MethodPost, "/v1/pii/tokenize"},
-		{http.MethodPost, "/v1/pii/detokenize"},
-		{http.MethodDelete, "/v1/pii/scopes/s1"},
-		{http.MethodPost, "/v1/runtime/chat"},
-		{http.MethodGet, "/metrics"},
+		{http.MethodPost, "/v1/pii/detect", `{"text":"email ivanov@example.com"}`, http.StatusOK},
+		{http.MethodPost, "/v1/pii/tokenize", `{"text":"email ivanov@example.com","scope_id":"s1"}`, http.StatusOK},
+		{http.MethodDelete, "/v1/pii/scopes/s2", "", http.StatusOK},
+		{http.MethodPost, "/v1/runtime/chat", `{"text":"hello","scope_id":"s3"}`, http.StatusServiceUnavailable},
+		{http.MethodGet, "/metrics", "", http.StatusOK},
 	}
 	for _, rt := range routes {
-		rec := doJSON(t, handler, rt.method, rt.path, "", nil)
-		if rec.Code != http.StatusForbidden {
-			t.Errorf("%s %s status = %d, want %d", rt.method, rt.path, rec.Code, http.StatusForbidden)
+		rec := doJSON(t, handler, rt.method, rt.path, rt.body, nil)
+		if rec.Code != rt.wantCode {
+			t.Errorf("%s %s status = %d, want %d; body = %q", rt.method, rt.path, rec.Code, rt.wantCode, rec.Body.String())
 		}
 	}
 }
 
-// TestProductionRouterAuth proves the production profile over the real router:
-// a missing, wrong or disabled key and a spoofed X-System-ID all return 401
-// without reaching the downstream handler.
-func TestProductionRouterAuth(t *testing.T) {
-	consumersJSON := `[
-		{"system_id":"sys-a","enabled":true,"api_key_sha256":"` + sha256Hex("key-a") + `","enabled_types":["EMAIL"],"allow_demasking":true},
-		{"system_id":"sys-b","enabled":true,"api_key_sha256":"` + sha256Hex("key-b") + `","enabled_types":["PHONE"],"allow_demasking":false},
-		{"system_id":"sys-c","enabled":false,"api_key_sha256":"` + sha256Hex("key-c") + `","enabled_types":["EMAIL"],"allow_demasking":true}
-	]`
-	handler := newAccessHandler(t, config.AccessProfileProduction, consumersJSON)
-
+// TestPublicRouterIgnoresIdentityHeaders proves legacy identity headers neither
+// grant nor deny access and cannot alter the static processing policy.
+func TestPublicRouterIgnoresIdentityHeaders(t *testing.T) {
+	handler := newPublicHandler(t)
 	cases := []struct {
 		name    string
 		headers map[string]string
 	}{
-		{"missing key", nil},
-		{"wrong key", map[string]string{"Authorization": "Bearer wrong-key"}},
-		{"disabled key", map[string]string{"Authorization": "Bearer key-c"}},
+		{"no headers", nil},
+		{"arbitrary authorization", map[string]string{"Authorization": "Bearer wrong-key"}},
 		{"spoofed system id", map[string]string{"X-System-ID": "sys-a"}},
 	}
 	for _, tc := range cases {
 		rec := doJSON(t, handler, http.MethodPost, "/v1/pii/tokenize",
 			`{"text":"email ivanov@example.com","scope_id":"s1"}`, tc.headers)
-		if rec.Code != http.StatusUnauthorized {
-			t.Errorf("%s: status = %d, want %d", tc.name, rec.Code, http.StatusUnauthorized)
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s: status = %d, want %d; body = %q", tc.name, rec.Code, http.StatusOK, rec.Body.String())
 		}
 	}
 }
 
-// TestProductionDifferentEnabledTypes proves that two systems with different
-// enabled_types produce different tokenized results on the same text: sys-a
-// masks only EMAIL, sys-b masks only PHONE.
-func TestProductionDifferentEnabledTypes(t *testing.T) {
-	consumersJSON := `[
-		{"system_id":"sys-a","enabled":true,"api_key_sha256":"` + sha256Hex("key-a") + `","enabled_types":["EMAIL"],"allow_demasking":true},
-		{"system_id":"sys-b","enabled":true,"api_key_sha256":"` + sha256Hex("key-b") + `","enabled_types":["PHONE"],"allow_demasking":true}
-	]`
-	handler := newAccessHandler(t, config.AccessProfileProduction, consumersJSON)
+// TestPublicRouterUsesFullTypeSet proves all canonical types are processed by a
+// single static policy rather than selected per consumer.
+func TestPublicRouterUsesFullTypeSet(t *testing.T) {
+	handler := newPublicHandler(t)
 	const text = "Клиент Иванов Иван, email ivanov@example.com, телефон +7 900 123-45-67"
-
-	recA := doJSON(t, handler, http.MethodPost, "/v1/pii/tokenize",
-		`{"text":"`+text+`","scope_id":"s1"}`, map[string]string{"Authorization": "Bearer key-a"})
-	if recA.Code != http.StatusOK {
-		t.Fatalf("sys-a tokenize status = %d, want %d; body = %q", recA.Code, http.StatusOK, recA.Body.String())
-	}
-	var respA api.TokenizeResponse
-	if err := json.Unmarshal(recA.Body.Bytes(), &respA); err != nil {
-		t.Fatalf("sys-a decode error = %v", err)
-	}
-	if !strings.Contains(respA.TokenizedText, "<EMAIL_") {
-		t.Errorf("sys-a tokenized text %q missing EMAIL token", respA.TokenizedText)
-	}
-	if strings.Contains(respA.TokenizedText, "<PHONE_") {
-		t.Errorf("sys-a tokenized text %q must not contain PHONE token", respA.TokenizedText)
-	}
-
-	recB := doJSON(t, handler, http.MethodPost, "/v1/pii/tokenize",
-		`{"text":"`+text+`","scope_id":"s1"}`, map[string]string{"Authorization": "Bearer key-b"})
-	if recB.Code != http.StatusOK {
-		t.Fatalf("sys-b tokenize status = %d, want %d; body = %q", recB.Code, http.StatusOK, recB.Body.String())
-	}
-	var respB api.TokenizeResponse
-	if err := json.Unmarshal(recB.Body.Bytes(), &respB); err != nil {
-		t.Fatalf("sys-b decode error = %v", err)
-	}
-	if !strings.Contains(respB.TokenizedText, "<PHONE_") {
-		t.Errorf("sys-b tokenized text %q missing PHONE token", respB.TokenizedText)
-	}
-	if strings.Contains(respB.TokenizedText, "<EMAIL_") {
-		t.Errorf("sys-b tokenized text %q must not contain EMAIL token", respB.TokenizedText)
-	}
-}
-
-// TestProductionAllowDemaskingFalseBlocksDemasking proves that a system with
-// AllowDemasking=false gets 403 on the demasking routes before the downstream
-// handler (and therefore before any vault or LLM operation) runs.
-func TestProductionAllowDemaskingFalseBlocksDemasking(t *testing.T) {
-	consumersJSON := `[
-		{"system_id":"sys-a","enabled":true,"api_key_sha256":"` + sha256Hex("key-a") + `","enabled_types":["EMAIL"],"allow_demasking":true},
-		{"system_id":"sys-b","enabled":true,"api_key_sha256":"` + sha256Hex("key-b") + `","enabled_types":["PHONE"],"allow_demasking":false}
-	]`
-	handler := newAccessHandler(t, config.AccessProfileProduction, consumersJSON)
-
-	for _, path := range []string{"/v1/pii/detokenize", "/v1/runtime/chat"} {
-		rec := doJSON(t, handler, http.MethodPost, path,
-			`{"text":"x","scope_id":"s1","mode":"strict"}`, map[string]string{"Authorization": "Bearer key-b"})
-		if rec.Code != http.StatusForbidden {
-			t.Errorf("POST %s status = %d, want %d (blocked before vault/LLM)", path, rec.Code, http.StatusForbidden)
-		}
-	}
-}
-
-// TestProductionCrossSystemScopeIsolation proves that two systems using the
-// same external scope_id cannot detokenize or revoke each other's data: sys-b
-// cannot restore sys-a's token and cannot revoke sys-a's mappings, while sys-a
-// can still restore its own token after sys-b's revoke.
-func TestProductionCrossSystemScopeIsolation(t *testing.T) {
-	consumersJSON := `[
-		{"system_id":"sys-a","enabled":true,"api_key_sha256":"` + sha256Hex("key-a") + `","enabled_types":["EMAIL"],"allow_demasking":true},
-		{"system_id":"sys-b","enabled":true,"api_key_sha256":"` + sha256Hex("key-b") + `","enabled_types":["PHONE"],"allow_demasking":true}
-	]`
-	handler := newAccessHandler(t, config.AccessProfileProduction, consumersJSON)
-	const scope = "shared-scope"
-
-	// sys-a tokenizes an email under the shared scope.
 	rec := doJSON(t, handler, http.MethodPost, "/v1/pii/tokenize",
-		`{"text":"email ivanov@example.com","scope_id":"`+scope+`"}`, map[string]string{"Authorization": "Bearer key-a"})
+		`{"text":"`+text+`","scope_id":"s1"}`, nil)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("sys-a tokenize status = %d, want %d; body = %q", rec.Code, http.StatusOK, rec.Body.String())
+		t.Fatalf("tokenize status = %d, want %d; body = %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var resp api.TokenizeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode error = %v", err)
+	}
+	if !strings.Contains(resp.TokenizedText, "<EMAIL_") {
+		t.Errorf("tokenized text %q missing EMAIL token", resp.TokenizedText)
+	}
+	if !strings.Contains(resp.TokenizedText, "<PHONE_") {
+		t.Errorf("tokenized text %q missing PHONE token", resp.TokenizedText)
+	}
+}
+
+// TestPublicScopeRoundTrip proves the caller scope is the sole namespace and
+// detokenization requires no identity or demasking capability.
+func TestPublicScopeRoundTrip(t *testing.T) {
+	handler := newPublicHandler(t)
+	const scope = "shared-scope"
+	rec := doJSON(t, handler, http.MethodPost, "/v1/pii/tokenize",
+		`{"text":"email ivanov@example.com","scope_id":"`+scope+`"}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("tokenize status = %d, want %d; body = %q", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	var tokResp api.TokenizeResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &tokResp); err != nil {
-		t.Fatalf("sys-a decode error = %v", err)
+		t.Fatalf("decode error = %v", err)
 	}
-	if !strings.Contains(tokResp.TokenizedText, "<EMAIL_") {
-		t.Fatalf("sys-a tokenized text %q missing EMAIL token", tokResp.TokenizedText)
-	}
-
-	// sys-b cannot detokenize sys-a's token under the same external scope.
 	rec2 := doJSON(t, handler, http.MethodPost, "/v1/pii/detokenize",
-		`{"text":"`+tokResp.TokenizedText+`","scope_id":"`+scope+`","mode":"strict"}`, map[string]string{"Authorization": "Bearer key-b"})
-	if rec2.Code != http.StatusInternalServerError {
-		t.Errorf("sys-b detokenize status = %d, want %d (cross-system detokenize must fail)", rec2.Code, http.StatusInternalServerError)
-	}
-
-	// sys-b revokes the shared scope; this must not affect sys-a's namespace.
-	rec3 := doJSON(t, handler, http.MethodDelete, "/v1/pii/scopes/"+scope, "", map[string]string{"Authorization": "Bearer key-b"})
-	if rec3.Code != http.StatusOK {
-		t.Fatalf("sys-b revoke status = %d, want %d; body = %q", rec3.Code, http.StatusOK, rec3.Body.String())
-	}
-
-	// sys-a can still restore its own token after sys-b's revoke.
-	rec4 := doJSON(t, handler, http.MethodPost, "/v1/pii/detokenize",
-		`{"text":"`+tokResp.TokenizedText+`","scope_id":"`+scope+`","mode":"strict"}`, map[string]string{"Authorization": "Bearer key-a"})
-	if rec4.Code != http.StatusOK {
-		t.Fatalf("sys-a detokenize after sys-b revoke status = %d, want %d; body = %q", rec4.Code, http.StatusOK, rec4.Body.String())
+		`{"text":"`+tokResp.TokenizedText+`","scope_id":"`+scope+`","mode":"strict"}`, nil)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("detokenize status = %d, want %d; body = %q", rec2.Code, http.StatusOK, rec2.Body.String())
 	}
 	var detResp api.DetokenizeResponse
-	if err := json.Unmarshal(rec4.Body.Bytes(), &detResp); err != nil {
-		t.Fatalf("sys-a detokenize decode error = %v", err)
+	if err := json.Unmarshal(rec2.Body.Bytes(), &detResp); err != nil {
+		t.Fatalf("detokenize decode error = %v", err)
 	}
 	if !strings.Contains(detResp.RestoredText, "ivanov@example.com") {
-		t.Errorf("sys-a restored text %q missing original email", detResp.RestoredText)
+		t.Errorf("restored text %q missing original email", detResp.RestoredText)
 	}
 }
 
-// TestValidateEnabledTypes is a table test proving that validateEnabledTypes
-// accepts a consumer with only canonical enabled types and rejects a blank,
-// duplicate or unknown type name with a safe error that never reveals a system
-// ID, hash or the original JSON.
-func TestValidateEnabledTypes(t *testing.T) {
+// TestPublicPipelineUsesAllCanonicalTypes proves the static public policy is
+// built from the registry rather than a consumer-specific enabled type list.
+func TestPublicPipelineUsesAllCanonicalTypes(t *testing.T) {
 	reg, err := detection.New()
 	if err != nil {
 		t.Fatalf("detection.New() error = %v", err)
 	}
-	cases := []struct {
-		name    string
-		types   string
-		wantErr bool
-	}{
-		{"canonical types", `["EMAIL","PHONE"]`, false},
-		{"blank type", `["EMAIL",""]`, true},
-		{"duplicate type", `["EMAIL","EMAIL"]`, true},
-		{"unknown type", `["EMAIL","BOGUS_TYPE"]`, true},
+	allowed := make([]string, 0, len(reg.Types()))
+	for _, typ := range reg.Types() {
+		allowed = append(allowed, string(typ))
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			consumers := loadConsumers(t, `[
-				{"system_id":"sys-a","enabled":true,"api_key_sha256":"`+sha256Hex("key-a")+`","enabled_types":`+tc.types+`,"allow_demasking":true}
-			]`)
-			err := validateEnabledTypes(reg, consumers)
-			if tc.wantErr && err == nil {
-				t.Fatal("validateEnabledTypes() error = nil, want error")
-			}
-			if !tc.wantErr && err != nil {
-				t.Fatalf("validateEnabledTypes() error = %v, want nil", err)
-			}
-			if err != nil {
-				if strings.Contains(err.Error(), "sys-a") || strings.Contains(err.Error(), "BOGUS_TYPE") {
-					t.Errorf("error %q leaks system ID or type", err.Error())
-				}
-			}
-		})
+	p := policy.NewPolicy(allowed)
+	for _, typ := range reg.Types() {
+		if !p.AllowsType(string(typ)) {
+			t.Errorf("public policy disallows %s", typ)
+		}
 	}
 }
 
-// TestPipelineScopeFallbackWithoutMiddleware proves that the pipeline keeps the
-// raw caller scope when no trusted policy is present in context (internal calls
-// and tests that do not go through the middleware), so the fallback path is
-// unchanged.
-func TestPipelineScopeFallbackWithoutMiddleware(t *testing.T) {
+// TestPipelineUsesCallerScope proves the pipeline always uses the raw caller
+// scope without deriving an identity-dependent namespace.
+func TestPipelineUsesCallerScope(t *testing.T) {
 	_, handlers := newTestPipeline(t)
 	const scope = "raw-scope-fallback"
-	// Tokenize then detokenize with the same raw scope must round-trip through
-	// the raw scope (no namespacing) when no middleware policy is in context.
 	res, err := handlers.Tokenize(context.Background(), api.TokenizeRequest{
 		Text: "email ivanov@example.com", ScopeID: scope,
 	})
@@ -1257,11 +1124,6 @@ func TestPipelineScopeFallbackWithoutMiddleware(t *testing.T) {
 	}
 	if !strings.Contains(det.RestoredText, "ivanov@example.com") {
 		t.Errorf("restored text %q missing original email", det.RestoredText)
-	}
-	// The pipeline's static policy is the fallback; the raw scope must be used
-	// because no trusted policy is present in context.
-	if _, ok := policy.PolicyFromContext(context.Background()); ok {
-		t.Fatal("unexpected trusted policy in context")
 	}
 }
 

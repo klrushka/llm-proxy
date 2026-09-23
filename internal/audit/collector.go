@@ -2,9 +2,8 @@
 // only allowlisted safe entity metadata from the detection pipeline to the
 // outer audit middleware. It never accepts or stores plaintext values, restored
 // text, token mappings, ciphertext, keys, authorization headers or request and
-// response bodies. The collector is created by the outer audit middleware
-// before the access-control middleware runs, so access-control denials are
-// still audited, and it is read by the middleware after the handler completes.
+// response bodies. The collector is created by the outer audit middleware and
+// read after the handler completes.
 package audit
 
 import (
