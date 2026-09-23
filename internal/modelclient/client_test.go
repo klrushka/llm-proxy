@@ -85,7 +85,6 @@ func TestInferDropsInvalidKeepsValidSibling(t *testing.T) {
 			entityJSON("", 0, 4, 0.9, "rubert"),          // empty label
 			entityJSON("BAD", 0, 4, 1.5, "rubert"),       // confidence > 1
 			entityJSON("BAD", 0, 4, -0.1, "rubert"),      // confidence < 0
-			entityJSON("BAD", 0, 4, 0.9, "other"),        // unknown model
 		))
 	}))
 	defer srv.Close()
@@ -99,6 +98,30 @@ func TestInferDropsInvalidKeepsValidSibling(t *testing.T) {
 	}
 	if got[0].Label != "FULL_NAME" || got[0].Model != "rubert" {
 		t.Errorf("kept entity = %+v, want FULL_NAME/rubert", got[0])
+	}
+}
+
+func TestInferUnknownSourceFailsWholeResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, responseJSON(
+			entityJSON("FULL_NAME", 0, 4, 0.9, "rubert"), // valid sibling
+			entityJSON("BAD", 0, 4, 0.9, "other"),         // unknown model
+		))
+	}))
+	defer srv.Close()
+
+	got, err := newTestClient(t, srv, ModeFull).Infer(context.Background(), "Анна")
+	if err == nil {
+		t.Fatal("Infer() error = nil, want ErrInvalidResponse")
+	}
+	if !errors.Is(err, ErrInvalidResponse) {
+		t.Errorf("Infer() error = %v, want ErrInvalidResponse", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("len(entities) = %d, want 0", len(got))
+	}
+	if strings.Contains(err.Error(), "Анна") || strings.Contains(err.Error(), "other") {
+		t.Errorf("error %q leaks request text or source", err.Error())
 	}
 }
 

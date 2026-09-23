@@ -34,6 +34,11 @@ const (
 	modelGliner = "gliner"
 )
 
+// globalInferLimit is the fixed cap on concurrent /infer HTTP calls across all
+// requests sharing one Client instance. It is a safety backpressure bound
+// independent of any per-request concurrency limit.
+const globalInferLimit = 4
+
 // Package-local safe sentinels. They never carry input text, response bodies,
 // or any plaintext. Later degraded-mode wiring maps them to process-level
 // classifications.
@@ -61,12 +66,16 @@ type Entity struct {
 	Model      string
 }
 
-// Client calls the model worker's POST /infer and POST /count_tokens endpoints.
+// Client calls the model worker's POST /infer, POST /count_tokens and
+// POST /plan_windows endpoints.
 type Client struct {
 	endpoint      string
 	countEndpoint string
+	planEndpoint  string
 	mode          Mode
 	http          *http.Client
+	timeout       time.Duration
+	globalSem     chan struct{}
 }
 
 // New validates its inputs and returns a Client. It rejects an unknown mode,
@@ -101,11 +110,18 @@ func New(baseURL string, mode Mode, timeout time.Duration) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("modelclient: resolve count endpoint: %w", err)
 	}
+	planEndpoint, err := url.JoinPath(u.String(), "plan_windows")
+	if err != nil {
+		return nil, fmt.Errorf("modelclient: resolve plan endpoint: %w", err)
+	}
 	return &Client{
 		endpoint:      endpoint,
 		countEndpoint: countEndpoint,
+		planEndpoint:  planEndpoint,
 		mode:          mode,
 		http:          &http.Client{Timeout: timeout},
+		timeout:       timeout,
+		globalSem:     make(chan struct{}, globalInferLimit),
 	}, nil
 }
 
@@ -200,6 +216,9 @@ func normalize(wires []entityWire, text string) ([]Entity, error) {
 		if w.Label == nil || w.Start == nil || w.End == nil || w.Confidence == nil || w.Model == nil {
 			return nil, fmt.Errorf("%w: entity missing required field", ErrInvalidResponse)
 		}
+		if *w.Model != modelRubert && *w.Model != modelGliner {
+			return nil, fmt.Errorf("%w: unknown model source", ErrInvalidResponse)
+		}
 		e, ok := validateEntity(w, boundaries, runeCount)
 		if !ok {
 			continue
@@ -237,9 +256,6 @@ func validateEntity(w entityWire, boundaries []int, runeCount int) (Entity, bool
 		return Entity{}, false
 	}
 	if confidence < 0 || confidence > 1 {
-		return Entity{}, false
-	}
-	if model != modelRubert && model != modelGliner {
 		return Entity{}, false
 	}
 

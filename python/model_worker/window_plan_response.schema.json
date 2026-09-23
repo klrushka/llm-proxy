@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://llm-proxy.local/model_worker/window_plan_response.schema.json",
+  "title": "Model worker POST /plan_windows success response",
+  "description": "Contract for the Python model worker window plan response. Carries only the exact primary model id, a non-negative window count, the effective per-window token capacity, and ordered Unicode code-point ranges with per-window token counts. No source text, token ids, token strings, reversible mappings, or keys.",
+  "type": "object",
+  "required": ["model", "total_count", "max_window_tokens", "windows"],
+  "additionalProperties": false,
+  "properties": {
+    "model": {
+      "type": "string",
+      "const": "redmadrobot-rnd/rubert-base-pii-ner"
+    },
+    "total_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "max_window_tokens": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "windows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["start", "end", "token_count"],
+        "additionalProperties": false,
+        "properties": {
+          "start": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "end": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "token_count": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    }
+  }
+}
