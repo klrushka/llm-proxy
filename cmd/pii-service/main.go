@@ -104,7 +104,7 @@ func run() error {
 	for _, t := range reg.Types() {
 		allowed = append(allowed, string(t))
 	}
-	p := policy.NewPolicy(policy.DefaultConsumerID, allowed)
+	p := policy.NewPolicy(allowed)
 
 	client, err := modelclient.New(cfg.ModelWorkerURL, modelclient.Mode(cfg.ModelMode), cfg.ModelClientTimeout)
 	if err != nil {
@@ -132,39 +132,15 @@ func run() error {
 	regMetrics := metrics.NewRegistry(metricsWindow)
 	logger := audit.New(os.Stderr)
 
-	// Validate every production consumer's enabled_types against the canonical
-	// registry before wiring. An unknown type stops startup with a safe error
-	// that never reveals a system ID, hash or the original JSON.
-	if cfg.AccessProfile == config.AccessProfileProduction {
-		if err := validateEnabledTypes(reg, cfg.Consumers); err != nil {
-			return err
-		}
-	}
-
-	// The access-control middleware is the outer layer over the router. The
-	// checker profile injects the full benchmark policy into /process; the
-	// production profile authenticates consumers by API key and resolves their
-	// registered policy before any downstream handler runs.
-	var resolver *policy.Resolver
-	if cfg.Consumers != nil {
-		resolver = api.NewProductionResolver(cfg.Consumers)
-	}
-	access := api.NewConsumerAccess(cfg.AccessProfile, resolver, cfg.Consumers)
-
 	handler, err := buildRouter(cfg, pipe, handlers, op, regMetrics)
 	if err != nil {
 		return err
 	}
 
-	// The audit middleware is the outer layer; the access-control middleware
-	// sits inside it so the audit observer sees access-control denials and
-	// emits exactly one safe structured event per data request. The old
-	// process-only audit is removed from the router composition so no duplicate
-	// event is produced. The admission middleware sits between audit and access:
-	// an overloaded data request is rejected before the router but still emits
-	// one audit event.
+	// Audit surrounds admission so every admitted data request has exactly one
+	// safe event, including requests rejected while the service is overloaded.
 	admission := newAdmissionMiddleware(maxConcurrentRequests)
-	auditHandler := audit.Middleware(logger, audit.ModelMode(cfg.ModelMode))(admission(access.Middleware(handler)))
+	auditHandler := audit.Middleware(logger, audit.ModelMode(cfg.ModelMode))(admission(handler))
 
 	// Runtime executes model protection and the downstream LLM sequentially.
 	// Keep the socket write deadline above both configured upstream budgets so
@@ -269,8 +245,7 @@ func (m *admissionMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 // is absent the route stays fail-closed with 503 so /process can run alone.
 // WithRuntime is appended only when the group is complete: a nil option would
 // panic in NewRouter, which calls every option unconditionally. It returns the
-// router as an http.Handler so the access-control middleware can wrap it as the
-// outer layer.
+// router as an http.Handler for the server middleware chain.
 func buildRouter(cfg config.Config, pipe *api.Pipeline, handlers api.PIIHandlers, op *process.Operation, regMetrics *metrics.Registry) (http.Handler, error) {
 	opts := []api.Option{
 		api.WithPIIHandlers(handlers),
@@ -295,32 +270,6 @@ func buildRouter(cfg config.Config, pipe *api.Pipeline, handlers api.PIIHandlers
 		nil,
 		opts...,
 	), nil
-}
-
-// validateEnabledTypes checks every production consumer's enabled_types against
-// the canonical detection registry. A blank, duplicate or unknown type name
-// stops startup with a safe error that never reveals a system ID, an API key
-// hash or the original JSON.
-func validateEnabledTypes(reg *detection.Registry, consumers *config.Consumers) error {
-	if consumers == nil {
-		return nil
-	}
-	for _, c := range consumers.All() {
-		seen := make(map[string]struct{}, len(c.EnabledTypes))
-		for _, t := range c.EnabledTypes {
-			if t == "" {
-				return fmt.Errorf("%s: invalid enabled type", config.EnvConsumersJSON)
-			}
-			if _, dup := seen[t]; dup {
-				return fmt.Errorf("%s: invalid enabled type", config.EnvConsumersJSON)
-			}
-			seen[t] = struct{}{}
-			if !reg.Lookup(detection.Type(t)) {
-				return fmt.Errorf("%s: unknown enabled type", config.EnvConsumersJSON)
-			}
-		}
-	}
-	return nil
 }
 
 // modelDetector adapts the model-worker client to the pipeline's model
