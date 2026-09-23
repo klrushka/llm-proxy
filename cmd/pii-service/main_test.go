@@ -806,7 +806,7 @@ func TestBuildRouterUnconfiguredLLMNoPanic(t *testing.T) {
 	})
 
 	cfg := config.Config{LLM: config.LLMConfig{Timeout: config.DefaultLLMTimeout}}
-	mux, err := buildRouter(cfg, pipe, handlers, op)
+	mux, err := buildRouter(cfg, pipe, handlers, op, nil)
 	if err != nil {
 		t.Fatalf("buildRouter() error = %v", err)
 	}
@@ -966,7 +966,7 @@ func newPublicHandler(t *testing.T) http.Handler {
 		return res.TokenizedText, nil
 	})
 	cfg := config.Config{LLM: config.LLMConfig{Timeout: config.DefaultLLMTimeout}}
-	handler, err := buildRouter(cfg, pipe, handlers, op)
+	handler, err := buildRouter(cfg, pipe, handlers, op, nil)
 	if err != nil {
 		t.Fatalf("buildRouter() error = %v", err)
 	}
@@ -1339,7 +1339,7 @@ func newInstrumentedHandler(t *testing.T, admissionLimit int) (http.Handler, *me
 		return res.TokenizedText, nil
 	})
 	cfg := config.Config{LLM: config.LLMConfig{Timeout: config.DefaultLLMTimeout}}
-	mux, err := buildRouter(cfg, pipe, handlers, op)
+	mux, err := buildRouter(cfg, pipe, handlers, op, nil)
 	if err != nil {
 		t.Fatalf("buildRouter() error = %v", err)
 	}

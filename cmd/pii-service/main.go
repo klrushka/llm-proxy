@@ -103,7 +103,10 @@ func run() error {
 	}
 	p := policy.NewPolicy(allowed)
 
-	client, err := modelclient.New(cfg.ModelWorkerURL, modelclient.Mode(cfg.ModelMode), cfg.ModelClientTimeout)
+	regMetrics := metrics.New(metrics.Options{Version: version.Version, ModelMode: cfg.ModelMode})
+
+	client, err := modelclient.New(cfg.ModelWorkerURL, modelclient.Mode(cfg.ModelMode), cfg.ModelClientTimeout,
+		modelclient.WithTransport(regMetrics.InstrumentTransport("model_worker", modelclient.Operation, nil)))
 	if err != nil {
 		return fmt.Errorf("model client: %w", err)
 	}
@@ -126,10 +129,9 @@ func run() error {
 	}
 	op := process.NewOperation(process.NewStore(), mask)
 
-	regMetrics := metrics.New(metrics.Options{Version: version.Version, ModelMode: cfg.ModelMode})
 	logger := audit.New(os.Stderr)
 
-	handler, err := buildRouter(cfg, pipe, handlers, op)
+	handler, err := buildRouter(cfg, pipe, handlers, op, regMetrics)
 	if err != nil {
 		return err
 	}
@@ -296,7 +298,7 @@ func (m *admissionMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 // WithRuntime is appended only when the group is complete: a nil option would
 // panic in NewRouter, which calls every option unconditionally. It returns the
 // router mux for the server middleware chain.
-func buildRouter(cfg config.Config, pipe *api.Pipeline, handlers api.PIIHandlers, op *process.Operation) (*http.ServeMux, error) {
+func buildRouter(cfg config.Config, pipe *api.Pipeline, handlers api.PIIHandlers, op *process.Operation, m *metrics.Metrics) (*http.ServeMux, error) {
 	opts := []api.Option{
 		api.WithPIIHandlers(handlers),
 		api.WithProcess(op.Handle),

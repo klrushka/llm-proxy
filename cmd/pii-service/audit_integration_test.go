@@ -27,7 +27,7 @@ func newAuditHandler(t *testing.T) (http.Handler, *bytes.Buffer) {
 		return res.TokenizedText, nil
 	})
 	cfg := config.Config{LLM: config.LLMConfig{Timeout: config.DefaultLLMTimeout}}
-	handler, err := buildRouter(cfg, pipe, handlers, op)
+	handler, err := buildRouter(cfg, pipe, handlers, op, nil)
 	if err != nil {
 		t.Fatalf("buildRouter() error = %v", err)
 	}

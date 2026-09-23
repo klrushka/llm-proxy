@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // scrape returns the /metrics body served by m.
@@ -141,5 +142,78 @@ func TestNilMetricsMiddlewarePassesThrough(t *testing.T) {
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/x", nil))
 	if !called {
 		t.Fatal("next handler was not called")
+	}
+}
+
+func TestInstrumentTransportRecordsStatusAndOperation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	m := New(Options{})
+	client := &http.Client{Transport: m.InstrumentTransport("model_worker", func(*http.Request) string { return "infer" }, nil)}
+	resp, err := client.Post(srv.URL+"/infer?text=PII_CANARY_555", "application/json", strings.NewReader(`{"text":"PII_CANARY_555"}`))
+	if err != nil {
+		t.Fatalf("Post() error = %v", err)
+	}
+	resp.Body.Close()
+
+	body := scrape(t, m)
+	want := `http_client_request_duration_seconds_count{error_type="",http_request_method="POST",http_response_status_code="429",operation="infer",server="model_worker"} 1`
+	if !strings.Contains(body, want) {
+		t.Errorf("metrics body missing %q", want)
+	}
+	if strings.Contains(body, "PII_CANARY_555") || strings.Contains(body, srv.URL) {
+		t.Errorf("metrics body leaks request data")
+	}
+}
+
+func TestInstrumentTransportClassifiesTimeout(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-release }))
+	defer srv.Close()
+	defer close(release)
+
+	m := New(Options{})
+	client := &http.Client{
+		Timeout:   50 * time.Millisecond,
+		Transport: m.InstrumentTransport("llm", func(*http.Request) string { return "chat" }, nil),
+	}
+	if _, err := client.Get(srv.URL); err == nil {
+		t.Fatal("Get() error = nil, want timeout")
+	}
+
+	// http.Client returns on its timeout before the transport unwinds, so the
+	// observation may land shortly after Get returns.
+	want := `http_client_request_duration_seconds_count{error_type="timeout",http_request_method="GET",http_response_status_code="",operation="chat",server="llm"} 1`
+	deadline := time.Now().Add(2 * time.Second)
+	for !strings.Contains(scrape(t, m), want) {
+		if time.Now().After(deadline) {
+			t.Fatalf("metrics body missing %q", want)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestInstrumentTransportClassifiesConnectionFailure(t *testing.T) {
+	srv := httptest.NewServer(http.NotFoundHandler())
+	url := srv.URL
+	srv.Close()
+
+	m := New(Options{})
+	client := &http.Client{Transport: m.InstrumentTransport("model_worker", func(*http.Request) string { return "infer" }, nil)}
+	if _, err := client.Get(url); err == nil {
+		t.Fatal("Get() error = nil, want connection failure")
+	}
+	if body := scrape(t, m); !strings.Contains(body, `error_type="transport"`) {
+		t.Errorf("connection failure not classified as transport")
+	}
+}
+
+func TestNilMetricsInstrumentTransportReturnsNext(t *testing.T) {
+	var m *Metrics
+	if rt := m.InstrumentTransport("x", nil, nil); rt != http.DefaultTransport {
+		t.Errorf("InstrumentTransport() = %T, want http.DefaultTransport", rt)
 	}
 }

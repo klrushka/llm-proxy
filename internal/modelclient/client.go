@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"time"
 	"unicode/utf8"
 )
@@ -78,11 +79,35 @@ type Client struct {
 	globalSem     chan struct{}
 }
 
+// Option configures a Client.
+type Option func(*http.Client)
+
+// WithTransport sets the HTTP transport used for worker calls, for example an
+// instrumented one. A nil transport keeps the default.
+func WithTransport(rt http.RoundTripper) Option {
+	return func(c *http.Client) { c.Transport = rt }
+}
+
+// Operation maps a worker request to its fixed operation name (infer,
+// count_tokens or plan_windows) from the endpoint path; any other path maps
+// to other. It never returns request data.
+func Operation(r *http.Request) string {
+	switch path.Base(r.URL.Path) {
+	case "infer":
+		return "infer"
+	case "count_tokens":
+		return "count_tokens"
+	case "plan_windows":
+		return "plan_windows"
+	}
+	return "other"
+}
+
 // New validates its inputs and returns a Client. It rejects an unknown mode,
 // a non-positive timeout, and a base URL that is not an http(s) URL with a
 // non-empty host. A base URL containing a query or fragment is rejected as
 // invalid configuration. It does not rely on upstream config for validation.
-func New(baseURL string, mode Mode, timeout time.Duration) (*Client, error) {
+func New(baseURL string, mode Mode, timeout time.Duration, opts ...Option) (*Client, error) {
 	if mode != ModeFull && mode != ModeFast {
 		return nil, fmt.Errorf("modelclient: unknown mode %q", mode)
 	}
@@ -114,12 +139,16 @@ func New(baseURL string, mode Mode, timeout time.Duration) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("modelclient: resolve plan endpoint: %w", err)
 	}
+	httpClient := &http.Client{Timeout: timeout}
+	for _, opt := range opts {
+		opt(httpClient)
+	}
 	return &Client{
 		endpoint:      endpoint,
 		countEndpoint: countEndpoint,
 		planEndpoint:  planEndpoint,
 		mode:          mode,
-		http:          &http.Client{Timeout: timeout},
+		http:          httpClient,
 		timeout:       timeout,
 		globalSem:     make(chan struct{}, globalInferLimit),
 	}, nil

@@ -6,6 +6,9 @@
 package metrics
 
 import (
+	"context"
+	"errors"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -32,6 +35,7 @@ type Metrics struct {
 	serverDuration *prometheus.HistogramVec
 	serverActive   *prometheus.GaugeVec
 	serverBodySize *prometheus.HistogramVec
+	clientDuration *prometheus.HistogramVec
 }
 
 // DurationBuckets are the OpenTelemetry-recommended HTTP duration buckets in
@@ -81,7 +85,12 @@ func New(opts Options) *Metrics {
 			Buckets: bodySizeBuckets,
 		}, []string{"http_request_method", "http_route"}),
 	}
-	reg.MustRegister(m.serverDuration, m.serverActive, m.serverBodySize)
+	m.clientDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "http_client_request_duration_seconds",
+		Help:    "Duration of outbound HTTP requests to service dependencies.",
+		Buckets: DurationBuckets,
+	}, []string{"server", "operation", "http_request_method", "http_response_status_code", "error_type"})
+	reg.MustRegister(m.serverDuration, m.serverActive, m.serverBodySize, m.clientDuration)
 	return m
 }
 
@@ -158,6 +167,54 @@ func (s *statusRecorder) Write(b []byte) (int, error) {
 // Unwrap lets http.ResponseController reach the underlying writer.
 func (s *statusRecorder) Unwrap() http.ResponseWriter {
 	return s.ResponseWriter
+}
+
+// InstrumentTransport wraps next so every outbound request is observed in
+// http_client_request_duration_seconds. server names the dependency (for
+// example model_worker or llm) and operation maps a request to a fixed
+// operation name; neither may carry request data. A transport failure is
+// recorded with an empty status code and an error_type of timeout, canceled
+// or transport. A nil next uses http.DefaultTransport; a nil *Metrics returns
+// next unchanged.
+func (m *Metrics) InstrumentTransport(server string, operation func(*http.Request) string, next http.RoundTripper) http.RoundTripper {
+	if next == nil {
+		next = http.DefaultTransport
+	}
+	if m == nil {
+		return next
+	}
+	return roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		start := time.Now()
+		resp, err := next.RoundTrip(r)
+		status, errType := "", ""
+		if err != nil {
+			errType = transportErrorType(r.Context(), err)
+		} else {
+			status = strconv.Itoa(resp.StatusCode)
+		}
+		m.clientDuration.WithLabelValues(server, operation(r), methodLabel(r.Method), status, errType).Observe(time.Since(start).Seconds())
+		return resp, err
+	})
+}
+
+// roundTripperFunc adapts a function to http.RoundTripper.
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// transportErrorType classifies a transport error into a fixed label value.
+// It never uses the error text.
+func transportErrorType(ctx context.Context, err error) string {
+	var netErr net.Error
+	switch {
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(ctx.Err(), context.DeadlineExceeded),
+		errors.As(err, &netErr) && netErr.Timeout():
+		return "timeout"
+	case errors.Is(err, context.Canceled), errors.Is(ctx.Err(), context.Canceled):
+		return "canceled"
+	default:
+		return "transport"
+	}
 }
 
 // Handler returns the http.Handler for GET /metrics. A nil *Metrics serves a
