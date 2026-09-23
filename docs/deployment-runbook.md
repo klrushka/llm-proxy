@@ -282,6 +282,44 @@ docker compose -p llm-proxy --env-file /srv/llm-proxy/env \
   -f /srv/llm-proxy/releases/<short-sha>/docker-compose.yml down
 ```
 
+## Live smoke (task 13.3a client)
+
+`cmd/pii-smoke` is a reusable, standard-library-only live-smoke client. It
+checks `/health/live`, `/health/ready` and the full `POST /v1/runtime/chat`
+product flow (mask -> LLM -> demask) using only synthetic Russian PII, and
+verifies that the final response restored the synthetic values. It exits
+non-zero on any non-2xx, malformed/trailing JSON, oversized body, wrong
+contract or missing restored synthetic value, and never prints request/response
+bodies, credentials or sensitive data. Successful output is short and
+CI-friendly.
+
+The client is implemented and covered by focused `httptest` tests (task 13.3a).
+Running it against a real deployed URL is task 13.3b and is not claimed here.
+
+### HTTP
+
+```sh
+go run ./cmd/pii-smoke -base-url http://<host>:8080
+```
+
+### HTTPS with a self-signed certificate
+
+`-allow-self-signed` is an explicit opt-in that is applicable only to an
+`https` base URL; it is rejected for `http`. Use it only when the deployed
+service presents a self-signed certificate:
+
+```sh
+go run ./cmd/pii-smoke -base-url https://<host> -allow-self-signed
+```
+
+### HTTPS with a trusted certificate
+
+```sh
+go run ./cmd/pii-smoke -base-url https://<host>
+```
+
+Optional `-timeout` bounds the whole run and every HTTP request (default `30s`).
+
 ## Validation commands (task 13.2)
 
 ```sh

@@ -122,7 +122,8 @@
 
 - [x] 13.1 Добавить source-only ZIP verification с исключениями `.git`, `.venv`, binaries, caches, datasets, archives, media и secrets; observable check: ZIP собирается и проверяется на отсутствие исключённых элементов.
 - [x] 13.2 Добавить deployment/runbook; observable check: runbook команды выполняются.
-- [ ] 13.3 Добавить live smoke после deployment по выбранному deployed URL (HTTP или HTTPS; для HTTPS smoke поддерживает self-signed режим checker-а); observable check: live smoke проходит по выбранному протоколу.
+- [x] 13.3a Реализовать и локально проверить reusable live-smoke client (`cmd/pii-smoke`, stdlib-only): обязательный base URL, HTTP и HTTPS, явный opt-in `-allow-self-signed` только для HTTPS, bounded timeout/context и лимит размера response body, проверка `/health/live`, `/health/ready` и полного `POST /v1/runtime/chat`, только синтетические русские ПДн с проверкой восстановления после полного mask -> LLM -> demask пути, ненулевой код при non-2xx/malformed/trailing JSON/oversized body/неверном контракте/отсутствии восстановленных значений, без печати request/response bodies и чувствительных данных, короткий CI-пригодный успешный вывод; focused tests через httptest (HTTP success, TLS self-signed success только с opt-in, fail-closed без opt-in, основные безопасные ошибки); observable check: `go test ./...` проходит и smoke-команда выполнима. Отметить выполненным только при наличии тестов.
+- [ ] 13.3b Реально запустить live smoke после внешнего deployment по выбранному deployed URL (HTTP или HTTPS; для HTTPS smoke поддерживает self-signed режим checker-а); observable check: live smoke проходит по выбранному протоколу. Остаётся невыполненным, поскольку URL и инфраструктура сейчас не предоставлены.
 
 ## Stretch (необязательно, не блокирует completion)
 
