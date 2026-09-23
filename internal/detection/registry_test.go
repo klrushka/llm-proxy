@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// expectedCanonicalTypes independently enumerates the 28 canonical PII types
+// expectedCanonicalTypes independently enumerates the canonical PII types
 // from the Supported PII type registry requirement. It is test-owned and does
 // not reference production defaultTypes, so deleting or misspelling a
 // production type cannot keep these tests green.
@@ -17,6 +17,7 @@ var expectedCanonicalTypes = []Type{
 	Type("BIRTH_DATE"),
 	Type("BIRTH_PLACE"),
 	Type("PASSPORT_NUMBER"),
+	Type("FOREIGN_PASSPORT_NUMBER"),
 	Type("CITIZENSHIP"),
 	Type("PASSPORT_ISSUER"),
 	Type("PASSPORT_DIVISION_CODE"),

@@ -50,6 +50,38 @@ func TestHybridFallbackMasksAndRestoresInSameScope(t *testing.T) {
 	}
 }
 
+func TestForeignPassportMasksAndRestoresInPrimaryAndFallback(t *testing.T) {
+	for _, fallback := range []bool{false, true} {
+		name := "primary"
+		if fallback {
+			name = "fallback"
+		}
+		t.Run(name, func(t *testing.T) {
+			const text = "Загранпаспорт: 00 0000000"
+			model := func(context.Context, string) ([]detection.Candidate, error) {
+				if fallback {
+					return nil, api.ErrModelUnavailable
+				}
+				return nil, nil
+			}
+			pipe := newPipelineWithModel(t, model, string(detection.TypeForeignPassportNumber))
+			op := process.NewOperation(process.NewStore(), hybridProcessMask(pipe, nil))
+			first, err := op.Handle(context.Background(), process.Request{PayloadID: "foreign-id", Payload: text})
+			if err != nil || strings.Contains(first.Result, "00 0000000") || !strings.Contains(first.Result, "FOREIGN_PASSPORT_NUMBER") {
+				t.Fatalf("mask: err=%v masked=%t", err, first.Result != "" && !strings.Contains(first.Result, "00 0000000"))
+			}
+			restored, err := op.Handle(context.Background(), process.Request{PayloadID: "foreign-id", Payload: first.Result})
+			if err != nil || restored.Result != text {
+				t.Fatalf("process restore: %v", err)
+			}
+			vaultRestored, err := pipe.Handlers().Detokenize(context.Background(), api.DetokenizeRequest{Text: first.Result, ScopeID: processScope, Mode: api.ModeStrict})
+			if err != nil || vaultRestored.RestoredText != text {
+				t.Fatalf("vault restore: %v", err)
+			}
+		})
+	}
+}
+
 func TestHybridPrimaryBudgetLeavesTimeForRulesFallback(t *testing.T) {
 	const text = "Клиент, email budget@example.com"
 	pipe := newPipelineWithModel(t, func(ctx context.Context, _ string) ([]detection.Candidate, error) {

@@ -17,45 +17,46 @@ type Type string
 // the Supported PII type registry requirement and are shared by detection
 // results, token type suffixes and API metadata.
 const (
-	TypeFullName             Type = "FULL_NAME"
-	TypeFirstName            Type = "FIRST_NAME"
-	TypeLastName             Type = "LAST_NAME"
-	TypeMiddleName           Type = "MIDDLE_NAME"
-	TypeBirthDate            Type = "BIRTH_DATE"
-	TypeBirthPlace           Type = "BIRTH_PLACE"
-	TypePassportNumber       Type = "PASSPORT_NUMBER"
-	TypeCitizenship          Type = "CITIZENSHIP"
-	TypePassportIssuer       Type = "PASSPORT_ISSUER"
-	TypePassportDivisionCode Type = "PASSPORT_DIVISION_CODE"
-	TypePassportIssueDate    Type = "PASSPORT_ISSUE_DATE"
-	TypeDriverLicenseNumber  Type = "DRIVER_LICENSE_NUMBER"
-	TypeAddress              Type = "ADDRESS"
-	TypeAddressCountry       Type = "ADDRESS_COUNTRY"
-	TypeAddressPostalCode    Type = "ADDRESS_POSTAL_CODE"
-	TypeAddressRegion        Type = "ADDRESS_REGION"
-	TypeAddressCity          Type = "ADDRESS_CITY"
-	TypeAddressStreet        Type = "ADDRESS_STREET"
-	TypeAddressHouse         Type = "ADDRESS_HOUSE"
-	TypeAddressBuilding      Type = "ADDRESS_BUILDING"
-	TypeAddressApartment     Type = "ADDRESS_APARTMENT"
-	TypeEmail                Type = "EMAIL"
-	TypePhone                Type = "PHONE"
-	TypeINNPerson            Type = "INN_PERSON"
-	TypeBankCardNumber       Type = "BANK_CARD_NUMBER"
-	TypeCardCVV              Type = "CARD_CVV"
-	TypeCardPIN              Type = "CARD_PIN"
-	TypeCardholderName       Type = "CARDHOLDER_NAME"
+	TypeFullName              Type = "FULL_NAME"
+	TypeFirstName             Type = "FIRST_NAME"
+	TypeLastName              Type = "LAST_NAME"
+	TypeMiddleName            Type = "MIDDLE_NAME"
+	TypeBirthDate             Type = "BIRTH_DATE"
+	TypeBirthPlace            Type = "BIRTH_PLACE"
+	TypePassportNumber        Type = "PASSPORT_NUMBER"
+	TypeForeignPassportNumber Type = "FOREIGN_PASSPORT_NUMBER"
+	TypeCitizenship           Type = "CITIZENSHIP"
+	TypePassportIssuer        Type = "PASSPORT_ISSUER"
+	TypePassportDivisionCode  Type = "PASSPORT_DIVISION_CODE"
+	TypePassportIssueDate     Type = "PASSPORT_ISSUE_DATE"
+	TypeDriverLicenseNumber   Type = "DRIVER_LICENSE_NUMBER"
+	TypeAddress               Type = "ADDRESS"
+	TypeAddressCountry        Type = "ADDRESS_COUNTRY"
+	TypeAddressPostalCode     Type = "ADDRESS_POSTAL_CODE"
+	TypeAddressRegion         Type = "ADDRESS_REGION"
+	TypeAddressCity           Type = "ADDRESS_CITY"
+	TypeAddressStreet         Type = "ADDRESS_STREET"
+	TypeAddressHouse          Type = "ADDRESS_HOUSE"
+	TypeAddressBuilding       Type = "ADDRESS_BUILDING"
+	TypeAddressApartment      Type = "ADDRESS_APARTMENT"
+	TypeEmail                 Type = "EMAIL"
+	TypePhone                 Type = "PHONE"
+	TypeINNPerson             Type = "INN_PERSON"
+	TypeBankCardNumber        Type = "BANK_CARD_NUMBER"
+	TypeCardCVV               Type = "CARD_CVV"
+	TypeCardPIN               Type = "CARD_PIN"
+	TypeCardholderName        Type = "CARDHOLDER_NAME"
 )
 
 // Intermediate, non-canonical candidate types produced by model-label
 // resolution and consumed by contextual classification. They are deliberately
-// not part of the 28 canonical registry/defaultTypes.
+// not part of the canonical registry/defaultTypes.
 const (
 	TypeDate     Type = "DATE"
 	TypeLocation Type = "LOCATION"
 )
 
-// defaultTypes is the authoritative set of the 28 canonical types.
+// defaultTypes is the authoritative set of the canonical types.
 var defaultTypes = []Type{
 	TypeFullName,
 	TypeFirstName,
@@ -64,6 +65,7 @@ var defaultTypes = []Type{
 	TypeBirthDate,
 	TypeBirthPlace,
 	TypePassportNumber,
+	TypeForeignPassportNumber,
 	TypeCitizenship,
 	TypePassportIssuer,
 	TypePassportDivisionCode,
@@ -116,7 +118,7 @@ type Registry struct {
 	types map[Type]struct{}
 }
 
-// New returns a Registry preloaded with the 28 canonical types. extra may
+// New returns a Registry preloaded with the canonical types. extra may
 // register additional non-empty types without changing pipeline code; an
 // empty or duplicate extra type is rejected deterministically.
 func New(extra ...Type) (*Registry, error) {

@@ -18,6 +18,39 @@ func identitySpan(text, value string) (int, int) {
 	return i, i + len(value)
 }
 
+func TestForeignPassportContextAndBoundaries(t *testing.T) {
+	tests := []struct {
+		text, value string
+		want        bool
+	}{
+		{"загранпаспорт 00 0000000", "00 0000000", true},
+		{"Заграничный паспорт: 000000000", "000000000", true},
+		{"номер 00 0000000", "00 0000000", false},
+		{"паспорт 00 0000000", "00 0000000", false},
+		{"мойзагранпаспорт 00 0000000", "00 0000000", false},
+		{"загранпаспорт 0000000000", "0000000000", false},
+		{"загранпаспорт а000000000", "000000000", false},
+		{"загранпаспорт 000000000а", "000000000", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.text, func(t *testing.T) {
+			start, end := identitySpan(tt.text, tt.value)
+			var got []detection.Candidate
+			for _, c := range DetectIdentityDocuments(tt.text) {
+				if c.Type == detection.TypeForeignPassportNumber {
+					got = append(got, c)
+				}
+			}
+			if !tt.want && len(got) != 0 {
+				t.Fatalf("unexpected foreign candidate: %+v", got)
+			}
+			if tt.want && (len(got) != 1 || got[0].Start != start || got[0].End != end) {
+				t.Fatalf("foreign span = %+v, want [%d,%d)", got, start, end)
+			}
+		})
+	}
+}
+
 func TestDetectIdentityDocumentsPositive(t *testing.T) {
 	tests := []struct {
 		name string

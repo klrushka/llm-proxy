@@ -14,7 +14,7 @@ import (
 
 // TypeDate is the intermediate, non-canonical DATE type emitted by the date
 // rule for later contextual classification (task 6.2). It is deliberately not
-// part of the 28 canonical registry/defaultTypes.
+// part of the canonical registry/defaultTypes.
 const TypeDate detection.Type = "DATE"
 
 // numericDateRe matches the supported numeric date forms: DD.MM.YYYY,

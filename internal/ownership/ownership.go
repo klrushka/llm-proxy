@@ -534,7 +534,7 @@ func entityHasLinked(e merge.Entity) bool {
 // isLinkedType reports whether t is an identifier that links to a name.
 func isLinkedType(t detection.Type) bool {
 	switch t {
-	case detection.TypePassportNumber, detection.TypePhone,
+	case detection.TypePassportNumber, detection.TypeForeignPassportNumber, detection.TypePhone,
 		detection.TypeEmail, detection.TypeBirthDate:
 		return true
 	}
@@ -559,7 +559,7 @@ func isStructuredType(t detection.Type) bool {
 func isExplicitHighRiskType(t detection.Type) bool {
 	switch t {
 	case detection.TypeEmail, detection.TypePhone,
-		detection.TypePassportNumber, detection.TypePassportDivisionCode,
+		detection.TypePassportNumber, detection.TypeForeignPassportNumber, detection.TypePassportDivisionCode,
 		detection.TypePassportIssueDate, detection.TypePassportIssuer,
 		detection.TypeDriverLicenseNumber, detection.TypeINNPerson,
 		detection.TypeBankCardNumber, detection.TypeCardCVV,

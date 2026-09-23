@@ -14,7 +14,7 @@ import (
 )
 
 // Intermediate, non-canonical candidate types consumed by Classify. They are
-// deliberately not part of the 28 canonical registry.
+// deliberately not part of the canonical registry.
 const (
 	typeDate     detection.Type = "DATE"
 	typeLocation detection.Type = "LOCATION"

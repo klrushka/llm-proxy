@@ -15,6 +15,9 @@ import (
 // surrounding "паспорт" context is required separately.
 var passportDigitsRe = regexp.MustCompile(`\d{2}[ \t]\d{2}[ \t]\d{6}`)
 
+// Russian foreign passport: two series digits and seven number digits.
+var foreignPassportDigitsRe = regexp.MustCompile(`\d{2}[ \t]?\d{7}`)
+
 // divisionDigitsRe matches a passport division code in the standard 3-3
 // grouping, e.g. "000-000".
 var divisionDigitsRe = regexp.MustCompile(`\d{3}-\d{3}`)
@@ -30,6 +33,8 @@ var driverDigits2Re = regexp.MustCompile(`\d{2}[ \t]\d{2}[ \t]\d{6}`)
 // passportContexts are the explicit local context words that classify a
 // 2-2-6 digit run as a passport number.
 var passportContexts = []string{"паспорт"}
+
+var foreignPassportContexts = []string{"загранпаспорт", "заграничный паспорт"}
 
 // divisionContexts are the explicit local context words that classify a 3-3
 // digit run as a passport division code.
@@ -101,6 +106,7 @@ var issuerStopMarkers = map[string]bool{
 func DetectIdentityDocuments(text string) []detection.Candidate {
 	var out []detection.Candidate
 	out = append(out, identityCandidates(text, passportDigitsRe, passportContexts, detection.TypePassportNumber)...)
+	out = append(out, identityCandidates(text, foreignPassportDigitsRe, foreignPassportContexts, detection.TypeForeignPassportNumber)...)
 	out = append(out, explicitPassportCandidates(text)...)
 	out = append(out, identityCandidates(text, divisionDigitsRe, divisionContexts, detection.TypePassportDivisionCode)...)
 	out = append(out, identityCandidates(text, driverDigitsRe, driverContexts, detection.TypeDriverLicenseNumber)...)
