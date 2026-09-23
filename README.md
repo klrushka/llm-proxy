@@ -88,8 +88,6 @@ PII_MODEL_MODE=fast go run ./cmd/pii-service
 | `PII_LLM_MODEL` | — (опц.) | Идентификатор модели в исходящем JSON |
 | `PII_LLM_API_KEY` | — (опц.) | Ключ для `Authorization: Bearer` (пустой — заголовок не шлётся) |
 | `PII_LLM_TIMEOUT` | `60s` | Таймаут вызова downstream LLM |
-| `PII_ACCESS_PROFILE` | `checker` | `checker` или `production` |
-| `PII_CONSUMERS_JSON` | — (опц.) | JSON-список систем-потребителей для `production` |
 
 LLM-конфигурация опциональна как полная группа: `PII_LLM_URL` и
 `PII_LLM_MODEL` задаются вместе. Если обе отсутствуют, `POST /v1/runtime/chat`
@@ -229,13 +227,8 @@ make gitleaks
 make semgrep
 ```
 
-## Consumer policy
+## Доступ к API
 
-Профиль `checker` — совместимый default: открыты health и `POST /process` с
-полным benchmark-набором типов, остальные маршруты закрыты `403`. Профиль
-`production` требует на всех не-health маршрутах ровно один корректный
-`Authorization: Bearer <key>`; ключ резолвится в зарегистрированную систему и
-её политику. `PII_CONSUMERS_JSON` задаёт список систем: `system_id`,
-`enabled`, `api_key_sha256`, `enabled_types`, `allow_demasking`. Неизвестный
-тип в `enabled_types` останавливает запуск. `allow_demasking=false` блокирует
-`/v1/pii/detokenize` и `/v1/runtime/chat` до vault/LLM.
+Все HTTP-маршруты сервиса доступны без входящей авторизации и используют
+единый полный набор канонических типов ПДн. `PII_LLM_API_KEY` применяется
+только для исходящих запросов к настроенной внешней LLM.
