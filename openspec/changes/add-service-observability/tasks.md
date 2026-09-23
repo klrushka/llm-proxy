@@ -17,5 +17,5 @@
 
 - [x] 4.1 Обновить `docker-compose.yml` (порт метрик только `expose`), README и `docs/deployment-runbook.md` (сбор, NetworkPolicy, удалённые метрики); observable check: `docker compose config` проходит.
 - [x] 4.2 Перестроить Grafana-дашборд `deploy/grafana` на новых метриках: обзор RED, маршруты, зависимости, ПДн по типам, vault, Go runtime; observable check: JSON валиден, все запросы используют только метрики из 1.1–3.3.
-- [ ] 4.3 Добавить `deploy/prometheus/alerts.yml`: burn-rate по доступности, p95, сервис не опрашивается, model worker недоступен, устойчивые `429`, рост vault; observable check: `promtool check rules` проходит.
+- [x] 4.3 Добавить `deploy/prometheus/alerts.yml`: burn-rate по доступности, p95, сервис не опрашивается, model worker недоступен, устойчивые `429`, рост vault; observable check: `promtool check rules` и `promtool test rules deploy/prometheus/alerts_test.yml` проходят.
 - [ ] 4.4 Прогнать load bench с метриками; observable check: RPS и p95 не хуже прогона из `docs/load-benchmark-verified-run.md` более чем на 5 процентов.

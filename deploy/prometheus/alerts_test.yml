@@ -1,0 +1,90 @@
+# promtool unit tests for alerts.yml: promtool test rules deploy/prometheus/alerts_test.yml
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  - name: instance down fires after 2 minutes
+    interval: 1m
+    input_series:
+      - series: 'up{job="pii-service", instance="a:9464"}'
+        values: "1 1 0 0 0 0"
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: PiiServiceDown
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: PiiServiceDown
+        exp_alerts:
+          - exp_labels: {severity: critical, job: pii-service, instance: "a:9464"}
+            exp_annotations:
+              summary: "pii-service a:9464 is not scraped"
+              description: "Prometheus cannot read /metrics on port 9464: the service is down or the metrics port is unreachable."
+
+  - name: 10 % of 5xx burns the budget fast, 1 % does not
+    interval: 1m
+    input_series:
+      # 100 requests per minute, 10 of them 5xx.
+      - series: 'http_server_request_duration_seconds_count{job="pii-service", http_route="/process", http_response_status_code="200"}'
+        values: "0+90x120"
+      - series: 'http_server_request_duration_seconds_count{job="pii-service", http_route="/process", http_response_status_code="503"}'
+        values: "0+10x120"
+      # Health traffic must not dilute the ratio.
+      - series: 'http_server_request_duration_seconds_count{job="pii-service", http_route="/health/live", http_response_status_code="200"}'
+        values: "0+1000x120"
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: PiiErrorBudgetFastBurn
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations:
+              summary: "pii-service burns the 5xx error budget 14x faster than allowed"
+              description: "5xx ratio over 1h is 10%; at this rate 2 % of the monthly budget is spent per hour."
+
+  - name: low error ratio stays quiet
+    interval: 1m
+    input_series:
+      - series: 'http_server_request_duration_seconds_count{job="pii-service", http_route="/v1/pii/tokenize", http_response_status_code="200"}'
+        values: "0+999x120"
+      - series: 'http_server_request_duration_seconds_count{job="pii-service", http_route="/v1/pii/tokenize", http_response_status_code="500"}'
+        values: "0+1x120"
+    alert_rule_test:
+      - eval_time: 110m
+        alertname: PiiErrorBudgetFastBurn
+        exp_alerts: []
+      - eval_time: 110m
+        alertname: PiiErrorBudgetSlowBurn
+        exp_alerts: []
+
+  - name: model worker failures
+    interval: 1m
+    input_series:
+      - series: 'http_client_request_duration_seconds_count{job="pii-service", server="model_worker", operation="infer", http_response_status_code="200", error_type=""}'
+        values: "0+80x20"
+      - series: 'http_client_request_duration_seconds_count{job="pii-service", server="model_worker", operation="infer", http_response_status_code="", error_type="timeout"}'
+        values: "0+20x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: PiiModelWorkerErrors
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations:
+              summary: "Model worker calls fail"
+              description: "20% of model worker calls end with non-2xx, timeout or connection error; detection fails closed with 503."
+
+  - name: vault growth only after 2 hours of steady growth
+    interval: 5m
+    input_series:
+      - series: 'pii_vault_mappings{job="pii-service", instance="a:9464"}'
+        values: "0+100x60"
+      - series: 'pii_vault_mappings{job="pii-service", instance="b:9464"}'
+        values: "500x60"
+    alert_rule_test:
+      - eval_time: 3h
+        alertname: PiiVaultGrowing
+        exp_alerts:
+          - exp_labels: {severity: warning, job: pii-service, instance: "a:9464"}
+            exp_annotations:
+              summary: "pii-service vault keeps growing"
+              description: "Live vault mappings on a:9464 have grown for 2 hours despite the TTL; memory will run out."

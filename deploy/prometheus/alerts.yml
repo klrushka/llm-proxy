@@ -1,0 +1,179 @@
+# Prometheus rules for pii-service. Assumes the scrape job is named
+# "pii-service" (see docs/deployment-runbook.md, section Monitoring).
+#
+# SLO targets are recording rules in the first group: change them there, the
+# alert expressions read them and need no edits.
+#   - availability: 99.5 % of data requests answer without 5xx;
+#   - latency: p95 of data requests except /v1/runtime/chat below 1 s
+#     (runtime latency is dominated by the external LLM and is alerted
+#     separately through LLM errors).
+# Error-budget alerts follow the multi-window, multi-burn-rate method of the
+# Google SRE Workbook ("Alerting on SLOs").
+groups:
+  - name: pii-service-slo
+    rules:
+      - record: pii:slo:error_budget_ratio
+        expr: vector(0.005)
+      - record: pii:slo:latency_p95_seconds
+        expr: vector(1)
+
+  - name: pii-service-recording
+    rules:
+      - record: pii:request_errors:ratio_rate5m
+        expr: |
+          sum(rate(http_server_request_duration_seconds_count{job="pii-service", http_route=~"/process|/v1/.+", http_response_status_code=~"5.."}[5m]))
+          /
+          sum(rate(http_server_request_duration_seconds_count{job="pii-service", http_route=~"/process|/v1/.+"}[5m]))
+      - record: pii:request_errors:ratio_rate30m
+        expr: |
+          sum(rate(http_server_request_duration_seconds_count{job="pii-service", http_route=~"/process|/v1/.+", http_response_status_code=~"5.."}[30m]))
+          /
+          sum(rate(http_server_request_duration_seconds_count{job="pii-service", http_route=~"/process|/v1/.+"}[30m]))
+      - record: pii:request_errors:ratio_rate1h
+        expr: |
+          sum(rate(http_server_request_duration_seconds_count{job="pii-service", http_route=~"/process|/v1/.+", http_response_status_code=~"5.."}[1h]))
+          /
+          sum(rate(http_server_request_duration_seconds_count{job="pii-service", http_route=~"/process|/v1/.+"}[1h]))
+      - record: pii:request_errors:ratio_rate2h
+        expr: |
+          sum(rate(http_server_request_duration_seconds_count{job="pii-service", http_route=~"/process|/v1/.+", http_response_status_code=~"5.."}[2h]))
+          /
+          sum(rate(http_server_request_duration_seconds_count{job="pii-service", http_route=~"/process|/v1/.+"}[2h]))
+      - record: pii:request_errors:ratio_rate6h
+        expr: |
+          sum(rate(http_server_request_duration_seconds_count{job="pii-service", http_route=~"/process|/v1/.+", http_response_status_code=~"5.."}[6h]))
+          /
+          sum(rate(http_server_request_duration_seconds_count{job="pii-service", http_route=~"/process|/v1/.+"}[6h]))
+      - record: pii:request_errors:ratio_rate1d
+        expr: |
+          sum(rate(http_server_request_duration_seconds_count{job="pii-service", http_route=~"/process|/v1/.+", http_response_status_code=~"5.."}[1d]))
+          /
+          sum(rate(http_server_request_duration_seconds_count{job="pii-service", http_route=~"/process|/v1/.+"}[1d]))
+      - record: pii:request_duration_seconds:p95_rate5m
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_seconds_bucket{job="pii-service", http_route=~"/process|/v1/pii/.+"}[5m])))
+
+  - name: pii-service-alerts
+    rules:
+      - alert: PiiServiceDown
+        expr: up{job="pii-service"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "pii-service {{ $labels.instance }} is not scraped"
+          description: "Prometheus cannot read /metrics on port 9464: the service is down or the metrics port is unreachable."
+
+      - alert: PiiServiceAbsent
+        expr: absent(up{job="pii-service"})
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No pii-service targets are scraped"
+          description: "The pii-service scrape job has no targets; check service discovery and the scrape config."
+
+      - alert: PiiErrorBudgetFastBurn
+        expr: |
+          pii:request_errors:ratio_rate1h > on() group_left() (14.4 * pii:slo:error_budget_ratio)
+          and
+          pii:request_errors:ratio_rate5m > on() group_left() (14.4 * pii:slo:error_budget_ratio)
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "pii-service burns the 5xx error budget 14x faster than allowed"
+          description: "5xx ratio over 1h is {{ $value | humanizePercentage }}; at this rate 2 % of the monthly budget is spent per hour."
+
+      - alert: PiiErrorBudgetSlowBurn
+        expr: |
+          pii:request_errors:ratio_rate6h > on() group_left() (6 * pii:slo:error_budget_ratio)
+          and
+          pii:request_errors:ratio_rate30m > on() group_left() (6 * pii:slo:error_budget_ratio)
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "pii-service burns the 5xx error budget 6x faster than allowed"
+          description: "5xx ratio over 6h is {{ $value | humanizePercentage }}; 5 % of the monthly budget is spent per 6 hours."
+
+      - alert: PiiErrorBudgetTicket
+        expr: |
+          pii:request_errors:ratio_rate1d > on() group_left() (3 * pii:slo:error_budget_ratio)
+          and
+          pii:request_errors:ratio_rate2h > on() group_left() (3 * pii:slo:error_budget_ratio)
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "pii-service 5xx ratio stays above 3x the error budget"
+          description: "5xx ratio over 1d is {{ $value | humanizePercentage }}."
+
+      - alert: PiiLatencyHigh
+        expr: pii:request_duration_seconds:p95_rate5m > on() group_left() pii:slo:latency_p95_seconds
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "pii-service p95 latency is above the SLO"
+          description: "p95 of /process and /v1/pii/* is {{ $value | humanizeDuration }}. Check model worker latency first."
+
+      - alert: PiiModelWorkerErrors
+        expr: |
+          (
+            sum(rate(http_client_request_duration_seconds_count{job="pii-service", server="model_worker", http_response_status_code!~"2.."}[5m]))
+            /
+            sum(rate(http_client_request_duration_seconds_count{job="pii-service", server="model_worker"}[5m]))
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Model worker calls fail"
+          description: "{{ $value | humanizePercentage }} of model worker calls end with non-2xx, timeout or connection error; detection fails closed with 503."
+
+      - alert: PiiLLMErrors
+        expr: |
+          (
+            sum(rate(http_client_request_duration_seconds_count{job="pii-service", server="llm", http_response_status_code!~"2.."}[5m]))
+            /
+            sum(rate(http_client_request_duration_seconds_count{job="pii-service", server="llm"}[5m]))
+          ) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Downstream LLM calls fail"
+          description: "{{ $value | humanizePercentage }} of LLM calls from /v1/runtime/chat fail."
+
+      - alert: PiiOverloaded
+        expr: |
+          (
+            sum(rate(http_server_request_duration_seconds_count{job="pii-service", http_response_status_code="429"}[5m]))
+            /
+            sum(rate(http_server_request_duration_seconds_count{job="pii-service", http_route=~"/process|/v1/.+"}[5m]))
+          ) > 0.01
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "pii-service rejects requests with 429"
+          description: "{{ $value | humanizePercentage }} of data requests are rejected by admission; add instances or capacity."
+
+      - alert: PiiAuthFailuresHigh
+        expr: sum(rate(http_server_request_duration_seconds_count{job="pii-service", http_response_status_code="401"}[5m])) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Many unauthorized requests to pii-service"
+          description: "{{ $value | humanize }} requests/s fail authentication: a misconfigured consumer or key guessing."
+
+      - alert: PiiVaultGrowing
+        expr: min_over_time(deriv(pii_vault_mappings{job="pii-service"}[30m])[2h:5m]) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "pii-service vault keeps growing"
+          description: "Live vault mappings on {{ $labels.instance }} have grown for 2 hours despite the TTL; memory will run out."
