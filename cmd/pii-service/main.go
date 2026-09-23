@@ -128,7 +128,7 @@ func run() error {
 	regMetrics := metrics.New(metrics.Options{Version: version.Version, ModelMode: cfg.ModelMode})
 	logger := audit.New(os.Stderr)
 
-	handler, err := buildRouter(cfg, pipe, handlers, op, regMetrics)
+	handler, err := buildRouter(cfg, pipe, handlers, op)
 	if err != nil {
 		return err
 	}
@@ -143,11 +143,16 @@ func run() error {
 	// the server does not cut off an otherwise valid response mid-flight.
 	writeTimeout := serverWriteTimeout(cfg)
 	srv := newServer(cfg.APIListenAddress, auditHandler, writeTimeout)
+	metricsSrv := newMetricsServer(cfg.MetricsListenAddress, regMetrics.Handler())
 
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 2)
 	go func() {
 		fmt.Fprintf(os.Stdout, "pii-service %s listening on %s\n", version.Version, cfg.APIListenAddress)
 		errCh <- srv.ListenAndServe()
+	}()
+	go func() {
+		fmt.Fprintf(os.Stdout, "pii-service metrics listening on %s\n", cfg.MetricsListenAddress)
+		errCh <- metricsSrv.ListenAndServe()
 	}()
 
 	stop := make(chan os.Signal, 1)
@@ -156,6 +161,12 @@ func run() error {
 
 	select {
 	case err := <-errCh:
+		// Either listener stopping takes the whole service down so a dead
+		// metrics listener is never silently ignored.
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+		_ = metricsSrv.Shutdown(ctx)
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			return fmt.Errorf("http server: %w", err)
 		}
@@ -166,6 +177,9 @@ func run() error {
 		defer cancel()
 		if err := srv.Shutdown(ctx); err != nil {
 			return fmt.Errorf("http server shutdown: %w", err)
+		}
+		if err := metricsSrv.Shutdown(ctx); err != nil {
+			return fmt.Errorf("metrics server shutdown: %w", err)
 		}
 		return nil
 	}
@@ -181,6 +195,22 @@ func newServer(addr string, handler http.Handler, writeTimeout time.Duration) *h
 		ReadHeaderTimeout: serverReadHeaderTimeout,
 		ReadTimeout:       serverReadTimeout,
 		WriteTimeout:      writeTimeout,
+		IdleTimeout:       serverIdleTimeout,
+	}
+}
+
+// newMetricsServer builds the internal metrics listener. It serves only
+// GET /metrics, bypasses admission and audit, and must be
+// reachable only by the metrics collector.
+func newMetricsServer(addr string, metrics http.Handler) *http.Server {
+	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", metrics)
+	return &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: serverReadHeaderTimeout,
+		ReadTimeout:       serverReadTimeout,
+		WriteTimeout:      serverReadTimeout,
 		IdleTimeout:       serverIdleTimeout,
 	}
 }
@@ -219,7 +249,7 @@ func newAdmissionMiddleware(limit int) func(http.Handler) http.Handler {
 func (m *admissionMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Operational endpoints must remain observable during data-plane
 	// saturation; access control still runs inside this middleware.
-	if r.Method == http.MethodGet && (r.URL.Path == "/health/live" || r.URL.Path == "/health/ready" || r.URL.Path == "/metrics") {
+	if r.Method == http.MethodGet && (r.URL.Path == "/health/live" || r.URL.Path == "/health/ready") {
 		m.next.ServeHTTP(w, r)
 		return
 	}
@@ -242,11 +272,10 @@ func (m *admissionMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 // WithRuntime is appended only when the group is complete: a nil option would
 // panic in NewRouter, which calls every option unconditionally. It returns the
 // router as an http.Handler for the server middleware chain.
-func buildRouter(cfg config.Config, pipe *api.Pipeline, handlers api.PIIHandlers, op *process.Operation, regMetrics *metrics.Metrics) (http.Handler, error) {
+func buildRouter(cfg config.Config, pipe *api.Pipeline, handlers api.PIIHandlers, op *process.Operation) (http.Handler, error) {
 	opts := []api.Option{
 		api.WithPIIHandlers(handlers),
 		api.WithProcess(op.Handle),
-		api.WithMetrics(regMetrics),
 	}
 	if cfg.LLM.Enabled() {
 		llm, err := llmclient.New(llmclient.Config{
@@ -263,7 +292,6 @@ func buildRouter(cfg config.Config, pipe *api.Pipeline, handlers api.PIIHandlers
 	}
 	return api.NewRouter(
 		func() error { return nil },
-		nil,
 		opts...,
 	), nil
 }

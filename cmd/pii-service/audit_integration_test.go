@@ -11,7 +11,6 @@ import (
 	"github.com/klrushka/llm-proxy/internal/api"
 	"github.com/klrushka/llm-proxy/internal/audit"
 	"github.com/klrushka/llm-proxy/internal/config"
-	"github.com/klrushka/llm-proxy/internal/metrics"
 	"github.com/klrushka/llm-proxy/internal/process"
 )
 
@@ -27,9 +26,8 @@ func newAuditHandler(t *testing.T) (http.Handler, *bytes.Buffer) {
 		}
 		return res.TokenizedText, nil
 	})
-	regMetrics := metrics.New(metrics.Options{})
 	cfg := config.Config{LLM: config.LLMConfig{Timeout: config.DefaultLLMTimeout}}
-	handler, err := buildRouter(cfg, pipe, handlers, op, regMetrics)
+	handler, err := buildRouter(cfg, pipe, handlers, op)
 	if err != nil {
 		t.Fatalf("buildRouter() error = %v", err)
 	}

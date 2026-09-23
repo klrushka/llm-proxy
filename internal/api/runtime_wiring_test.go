@@ -101,7 +101,7 @@ func newWiredRuntimeMux(t *testing.T, downstream *downstreamLLM) *http.ServeMux 
 		t.Fatalf("llmclient.New() error = %v", err)
 	}
 	coord := pipe.RuntimeCoordinator(llm.Complete)
-	return NewRouter(nil, nil, WithRuntime(RuntimeFuncFromCoordinator(coord)))
+	return NewRouter(nil, WithRuntime(RuntimeFuncFromCoordinator(coord)))
 }
 
 // TestRuntimeWiringDownstreamReceivesTokensNotPlaintext proves the full
@@ -210,7 +210,7 @@ func TestRuntimeWiringProcessNeverCallsDownstream(t *testing.T) {
 		}
 		return res.TokenizedText, nil
 	})
-	mux := NewRouter(nil, nil,
+	mux := NewRouter(nil,
 		WithRuntime(RuntimeFuncFromCoordinator(coord)),
 		WithProcess(op.Handle),
 	)

@@ -43,7 +43,7 @@ func newIntegrationMux(t *testing.T) *http.ServeMux {
 		string(detection.TypePhone),
 	})
 	pipe := NewPipeline(noModel, p, g, v)
-	return NewRouter(nil, nil, WithPIIHandlers(pipe.Handlers()))
+	return NewRouter(nil, WithPIIHandlers(pipe.Handlers()))
 }
 
 func tokenizeText(t *testing.T, mux *http.ServeMux, text, scope string) TokenizeResponse {

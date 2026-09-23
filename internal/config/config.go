@@ -12,27 +12,29 @@ import (
 // Environment variable names. Exported so tests and future wiring do not
 // duplicate the strings.
 const (
-	EnvPrefix             = "PII_"
-	EnvAPIListenAddress   = EnvPrefix + "API_LISTEN_ADDRESS"
-	EnvModelWorkerURL     = EnvPrefix + "MODEL_WORKER_URL"
-	EnvVaultTTL           = EnvPrefix + "VAULT_TTL"
-	EnvModelMode          = EnvPrefix + "MODEL_MODE"
-	EnvVaultKey           = EnvPrefix + "VAULT_KEY"
-	EnvModelClientTimeout = EnvPrefix + "MODEL_CLIENT_TIMEOUT"
-	EnvLLMURL             = EnvPrefix + "LLM_URL"
-	EnvLLMModel           = EnvPrefix + "LLM_MODEL"
-	EnvLLMAPIKey          = EnvPrefix + "LLM_API_KEY"
-	EnvLLMTimeout         = EnvPrefix + "LLM_TIMEOUT"
+	EnvPrefix               = "PII_"
+	EnvAPIListenAddress     = EnvPrefix + "API_LISTEN_ADDRESS"
+	EnvMetricsListenAddress = EnvPrefix + "METRICS_LISTEN_ADDRESS"
+	EnvModelWorkerURL       = EnvPrefix + "MODEL_WORKER_URL"
+	EnvVaultTTL             = EnvPrefix + "VAULT_TTL"
+	EnvModelMode            = EnvPrefix + "MODEL_MODE"
+	EnvVaultKey             = EnvPrefix + "VAULT_KEY"
+	EnvModelClientTimeout   = EnvPrefix + "MODEL_CLIENT_TIMEOUT"
+	EnvLLMURL               = EnvPrefix + "LLM_URL"
+	EnvLLMModel             = EnvPrefix + "LLM_MODEL"
+	EnvLLMAPIKey            = EnvPrefix + "LLM_API_KEY"
+	EnvLLMTimeout           = EnvPrefix + "LLM_TIMEOUT"
 )
 
 // Defaults.
 const (
-	DefaultAPIListenAddress   = "127.0.0.1:8080"
-	DefaultModelWorkerURL     = "http://127.0.0.1:8000"
-	DefaultVaultTTL           = 15 * time.Minute
-	DefaultModelMode          = ModelModeFull
-	DefaultModelClientTimeout = 30 * time.Second
-	DefaultLLMTimeout         = 60 * time.Second
+	DefaultAPIListenAddress     = "127.0.0.1:8080"
+	DefaultMetricsListenAddress = "127.0.0.1:9464"
+	DefaultModelWorkerURL       = "http://127.0.0.1:8000"
+	DefaultVaultTTL             = 15 * time.Minute
+	DefaultModelMode            = ModelModeFull
+	DefaultModelClientTimeout   = 30 * time.Second
+	DefaultLLMTimeout           = 60 * time.Second
 )
 
 // Model modes.
@@ -43,13 +45,17 @@ const (
 
 // Config holds the resolved service configuration.
 type Config struct {
-	APIListenAddress   string
-	ModelWorkerURL     string
-	VaultTTL           time.Duration
-	ModelMode          string
-	VaultKey           VaultKey
-	ModelClientTimeout time.Duration
-	LLM                LLMConfig
+	APIListenAddress string
+	// MetricsListenAddress is the separate internal listener for GET /metrics.
+	// It is not behind admission or audit and must be reachable only by the metrics
+	// collector.
+	MetricsListenAddress string
+	ModelWorkerURL       string
+	VaultTTL             time.Duration
+	ModelMode            string
+	VaultKey             VaultKey
+	ModelClientTimeout   time.Duration
+	LLM                  LLMConfig
 }
 
 // LLMConfig holds the optional downstream LLM configuration. It is optional as
@@ -82,11 +88,12 @@ func (k VaultKey) Bytes() [32]byte {
 // Load reads configuration from the environment and validates it.
 func Load() (Config, error) {
 	cfg := Config{
-		APIListenAddress:   DefaultAPIListenAddress,
-		ModelWorkerURL:     DefaultModelWorkerURL,
-		VaultTTL:           DefaultVaultTTL,
-		ModelMode:          DefaultModelMode,
-		ModelClientTimeout: DefaultModelClientTimeout,
+		APIListenAddress:     DefaultAPIListenAddress,
+		MetricsListenAddress: DefaultMetricsListenAddress,
+		ModelWorkerURL:       DefaultModelWorkerURL,
+		VaultTTL:             DefaultVaultTTL,
+		ModelMode:            DefaultModelMode,
+		ModelClientTimeout:   DefaultModelClientTimeout,
 		LLM: LLMConfig{
 			Timeout: DefaultLLMTimeout,
 		},
@@ -94,6 +101,9 @@ func Load() (Config, error) {
 
 	if v, ok := os.LookupEnv(EnvAPIListenAddress); ok {
 		cfg.APIListenAddress = v
+	}
+	if v, ok := os.LookupEnv(EnvMetricsListenAddress); ok {
+		cfg.MetricsListenAddress = v
 	}
 	if v, ok := os.LookupEnv(EnvModelWorkerURL); ok {
 		cfg.ModelWorkerURL = v
@@ -165,6 +175,12 @@ func parseVaultKey(raw string) (VaultKey, error) {
 func (c Config) validate() error {
 	if c.APIListenAddress == "" {
 		return fmt.Errorf("%s: must not be empty", EnvAPIListenAddress)
+	}
+	if c.MetricsListenAddress == "" {
+		return fmt.Errorf("%s: must not be empty", EnvMetricsListenAddress)
+	}
+	if c.MetricsListenAddress == c.APIListenAddress {
+		return fmt.Errorf("%s: must differ from %s", EnvMetricsListenAddress, EnvAPIListenAddress)
 	}
 	if err := validateWorkerURL(c.ModelWorkerURL); err != nil {
 		return err

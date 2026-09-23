@@ -32,7 +32,7 @@ func newProcessDegradationMux(mask process.MaskFunc, limit int, logger *audit.Lo
 	if logger != nil {
 		opts = append(opts, WithProcessAudit(logger))
 	}
-	return NewRouter(nil, nil, opts...)
+	return NewRouter(nil, opts...)
 }
 
 // assertNoLeak fails the test if any marker appears in haystack. It is used to

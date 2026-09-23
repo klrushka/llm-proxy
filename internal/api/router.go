@@ -1,5 +1,5 @@
-// Package api provides the base HTTP routing for the service health and
-// metrics endpoints. It uses Go 1.23 ServeMux method patterns and returns a
+// Package api provides the base HTTP routing for the service health
+// endpoints. It uses Go 1.23 ServeMux method patterns and returns a
 // *http.ServeMux so later tasks can register /v1 and /process routes on the
 // same mux without rewriting it.
 package api
@@ -9,7 +9,6 @@ import (
 	"net/http"
 
 	"github.com/klrushka/llm-proxy/internal/audit"
-	"github.com/klrushka/llm-proxy/internal/metrics"
 )
 
 // ReadyFunc reports whether the service is ready to serve traffic. A nil
@@ -23,7 +22,6 @@ type options struct {
 	pii          PIIHandlers
 	process      ProcessFunc
 	runtime      RuntimeFunc
-	metrics      *metrics.Metrics
 	processAudit *audit.Logger
 }
 
@@ -34,19 +32,11 @@ func WithPIIHandlers(h PIIHandlers) Option {
 	return func(o *options) { o.pii = h }
 }
 
-// WithMetrics wires metrics into the router. Their handler serves GET /metrics.
-// When provided it takes precedence over the positional metrics handler
-// argument.
-func WithMetrics(reg *metrics.Metrics) Option {
-	return func(o *options) { o.metrics = reg }
-}
-
-// NewRouter builds the base router. ready is the injected readiness probe;
-// metrics is the injected metrics handler. A nil ready probe fails closed as
-// not ready. A nil metrics handler leaves the endpoint registered and
-// returns 503 instead of panicking. Options register the extended /v1/pii/*
-// routes and, via WithMetrics, the real metrics handler and instrumentation.
-func NewRouter(ready ReadyFunc, metricsHandler http.Handler, opts ...Option) *http.ServeMux {
+// NewRouter builds the base router. ready is the injected readiness probe; a
+// nil ready probe fails closed as not ready. Options register the extended
+// /v1/pii/* routes. GET /metrics is deliberately not served here: metrics live
+// on the separate internal metrics listener.
+func NewRouter(ready ReadyFunc, opts ...Option) *http.ServeMux {
 	var o options
 	for _, opt := range opts {
 		opt(&o)
@@ -54,11 +44,6 @@ func NewRouter(ready ReadyFunc, metricsHandler http.Handler, opts ...Option) *ht
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", handleLive)
 	mux.HandleFunc("GET /health/ready", handleReady(ready))
-	if o.metrics != nil {
-		mux.Handle("GET /metrics", o.metrics.Handler())
-	} else {
-		mux.Handle("GET /metrics", handleMetrics(metricsHandler))
-	}
 	registerPIIRoutes(mux, o.pii)
 	registerProcessRoute(mux, o.process, o.processAudit)
 	registerRuntimeRoute(mux, o.runtime)
@@ -77,15 +62,6 @@ func handleReady(ready ReadyFunc) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 	}
-}
-
-func handleMetrics(metrics http.Handler) http.Handler {
-	if metrics == nil {
-		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unavailable"})
-		})
-	}
-	return metrics
 }
 
 func writeJSON(w http.ResponseWriter, status int, body map[string]string) {

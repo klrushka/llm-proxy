@@ -20,7 +20,7 @@ import (
 // coordination are all the real in-process implementations.
 func newProcessIntegrationMux(mask process.MaskFunc) *http.ServeMux {
 	op := process.NewOperation(process.NewStore(), mask)
-	return NewRouter(nil, nil, WithProcess(op.Handle))
+	return NewRouter(nil, WithProcess(op.Handle))
 }
 
 // countingMask returns a deterministic MaskFunc that records the number of

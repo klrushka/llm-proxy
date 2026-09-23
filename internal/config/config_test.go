@@ -12,6 +12,7 @@ func resetEnv(t *testing.T) {
 	t.Helper()
 	for _, name := range []string{
 		EnvAPIListenAddress,
+		EnvMetricsListenAddress,
 		EnvModelWorkerURL,
 		EnvVaultTTL,
 		EnvModelMode,
@@ -56,6 +57,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.APIListenAddress != DefaultAPIListenAddress {
 		t.Errorf("APIListenAddress = %q, want %q", cfg.APIListenAddress, DefaultAPIListenAddress)
 	}
+	if cfg.MetricsListenAddress != DefaultMetricsListenAddress {
+		t.Errorf("MetricsListenAddress = %q, want %q", cfg.MetricsListenAddress, DefaultMetricsListenAddress)
+	}
 	if cfg.ModelWorkerURL != DefaultModelWorkerURL {
 		t.Errorf("ModelWorkerURL = %q, want %q", cfg.ModelWorkerURL, DefaultModelWorkerURL)
 	}
@@ -81,6 +85,7 @@ func TestLoadDefaults(t *testing.T) {
 func TestLoadOverrides(t *testing.T) {
 	resetEnv(t)
 	t.Setenv(EnvAPIListenAddress, "0.0.0.0:9090")
+	t.Setenv(EnvMetricsListenAddress, "0.0.0.0:9464")
 	t.Setenv(EnvModelWorkerURL, "https://worker.example.com:8443")
 	t.Setenv(EnvVaultTTL, "30s")
 	t.Setenv(EnvModelMode, ModelModeFast)
@@ -93,6 +98,9 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if cfg.APIListenAddress != "0.0.0.0:9090" {
 		t.Errorf("APIListenAddress = %q", cfg.APIListenAddress)
+	}
+	if cfg.MetricsListenAddress != "0.0.0.0:9464" {
+		t.Errorf("MetricsListenAddress = %q", cfg.MetricsListenAddress)
 	}
 	if cfg.ModelWorkerURL != "https://worker.example.com:8443" {
 		t.Errorf("ModelWorkerURL = %q", cfg.ModelWorkerURL)
@@ -379,5 +387,22 @@ func TestLoadLLMNonPositiveTimeout(t *testing.T) {
 
 	if _, err := Load(); err == nil {
 		t.Fatal("Load() expected error for non-positive LLM timeout")
+	}
+}
+
+func TestLoadRejectsInvalidMetricsListenAddress(t *testing.T) {
+	cases := map[string]string{
+		"empty":       "",
+		"same as API": DefaultAPIListenAddress,
+	}
+	for name, addr := range cases {
+		t.Run(name, func(t *testing.T) {
+			resetEnv(t)
+			t.Setenv(EnvVaultKey, validKey(t))
+			t.Setenv(EnvMetricsListenAddress, addr)
+			if _, err := Load(); err == nil || !strings.Contains(err.Error(), EnvMetricsListenAddress) {
+				t.Fatalf("Load() error = %v, want %s error", err, EnvMetricsListenAddress)
+			}
+		})
 	}
 }

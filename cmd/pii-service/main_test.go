@@ -803,10 +803,9 @@ func TestBuildRouterUnconfiguredLLMNoPanic(t *testing.T) {
 		}
 		return res.TokenizedText, nil
 	})
-	regMetrics := metrics.New(metrics.Options{})
 
 	cfg := config.Config{LLM: config.LLMConfig{Timeout: config.DefaultLLMTimeout}}
-	mux, err := buildRouter(cfg, pipe, handlers, op, regMetrics)
+	mux, err := buildRouter(cfg, pipe, handlers, op)
 	if err != nil {
 		t.Fatalf("buildRouter() error = %v", err)
 	}
@@ -965,9 +964,8 @@ func newPublicHandler(t *testing.T) http.Handler {
 		}
 		return res.TokenizedText, nil
 	})
-	regMetrics := metrics.New(metrics.Options{})
 	cfg := config.Config{LLM: config.LLMConfig{Timeout: config.DefaultLLMTimeout}}
-	handler, err := buildRouter(cfg, pipe, handlers, op, regMetrics)
+	handler, err := buildRouter(cfg, pipe, handlers, op)
 	if err != nil {
 		t.Fatalf("buildRouter() error = %v", err)
 	}
@@ -1002,7 +1000,6 @@ func TestPublicRouterIntegration(t *testing.T) {
 		{http.MethodPost, "/v1/pii/tokenize", `{"text":"email ivanov@example.com","scope_id":"s1"}`, http.StatusOK},
 		{http.MethodDelete, "/v1/pii/scopes/s2", "", http.StatusOK},
 		{http.MethodPost, "/v1/runtime/chat", `{"text":"hello","scope_id":"s3"}`, http.StatusServiceUnavailable},
-		{http.MethodGet, "/metrics", "", http.StatusOK},
 	}
 	for _, rt := range routes {
 		rec := doJSON(t, handler, rt.method, rt.path, rt.body, nil)
@@ -1185,7 +1182,7 @@ func TestAdmissionKeepsOperationalEndpointsAvailableWhenFull(t *testing.T) {
 	}()
 	<-occupied
 
-	for _, path := range []string{"/health/live", "/health/ready", "/metrics"} {
+	for _, path := range []string{"/health/live", "/health/ready"} {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		handler.ServeHTTP(rec, req)
@@ -1285,5 +1282,45 @@ func TestAdmissionPermitReleasedOnPanic(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Errorf("status after panic = %d, want %d (permit not released)", rec.Code, http.StatusOK)
+	}
+}
+
+// TestMetricsServerServesOnlyMetrics proves the internal metrics listener
+// serves GET /metrics and exposes no data route.
+func TestMetricsServerServesOnlyMetrics(t *testing.T) {
+	m := metrics.New(metrics.Options{Version: "test", ModelMode: config.ModelModeFast})
+	srv := newMetricsServer("127.0.0.1:0", m.Handler())
+
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /metrics status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !strings.Contains(rec.Body.String(), "pii_build_info") {
+		t.Errorf("metrics body missing pii_build_info")
+	}
+
+	for _, rt := range []struct{ method, path string }{
+		{http.MethodPost, "/process"},
+		{http.MethodPost, "/v1/pii/detect"},
+		{http.MethodGet, "/health/live"},
+	} {
+		rec := httptest.NewRecorder()
+		srv.Handler.ServeHTTP(rec, httptest.NewRequest(rt.method, rt.path, nil))
+		if rec.Code != http.StatusNotFound && rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s %s status = %d, want not served", rt.method, rt.path, rec.Code)
+		}
+	}
+	if srv.ReadHeaderTimeout <= 0 || srv.ReadTimeout <= 0 || srv.WriteTimeout <= 0 || srv.IdleTimeout <= 0 {
+		t.Errorf("metrics server timeouts must be positive: %+v", srv)
+	}
+}
+
+// TestPublicAPIDoesNotServeMetrics proves metrics are never served on the
+// public API listener.
+func TestPublicAPIDoesNotServeMetrics(t *testing.T) {
+	rec := doJSON(t, newPublicHandler(t), http.MethodGet, "/metrics", "", nil)
+	if rec.Code == http.StatusOK {
+		t.Fatalf("GET /metrics on API listener status = %d, want not served", rec.Code)
 	}
 }

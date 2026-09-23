@@ -47,7 +47,7 @@ func TestDetectSuccess(t *testing.T) {
 			}, nil
 		},
 	}
-	mux := NewRouter(nil, nil, WithPIIHandlers(h))
+	mux := NewRouter(nil, WithPIIHandlers(h))
 	rec := doJSONRequest(t, mux, http.MethodPost, "/v1/pii/detect",
 		`{"text":"Клиент ТЕСТОВ ТЕСТ ТЕСТОВИЧ","request_id":"r1"}`)
 	if rec.Code != http.StatusOK {
@@ -98,7 +98,7 @@ func TestDetectMissingText(t *testing.T) {
 			return DetectResponse{}, nil
 		},
 	}
-	mux := NewRouter(nil, nil, WithPIIHandlers(h))
+	mux := NewRouter(nil, WithPIIHandlers(h))
 	rec := doJSONRequest(t, mux, http.MethodPost, "/v1/pii/detect", `{"request_id":"r1"}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
@@ -114,7 +114,7 @@ func TestDetectMissingText(t *testing.T) {
 }
 
 func TestDetectMalformedJSON(t *testing.T) {
-	mux := NewRouter(nil, nil, WithPIIHandlers(PIIHandlers{
+	mux := NewRouter(nil, WithPIIHandlers(PIIHandlers{
 		Detect: func(_ context.Context, _ DetectRequest) (DetectResponse, error) {
 			return DetectResponse{}, nil
 		},
@@ -137,7 +137,7 @@ func TestOversizedBodyReturns413NoOperation(t *testing.T) {
 			return DetectResponse{}, nil
 		},
 	}
-	mux := NewRouter(nil, nil, WithPIIHandlers(h))
+	mux := NewRouter(nil, WithPIIHandlers(h))
 
 	// A valid JSON prefix followed by enough padding to exceed 8 MiB.
 	body := `{"text":"` + canary + `","request_id":"r1"}` + strings.Repeat(" ", maxRequestBodyBytes)
@@ -169,7 +169,7 @@ func TestOversizedTrailingContentReturns413(t *testing.T) {
 			return DetectResponse{}, nil
 		},
 	}
-	mux := NewRouter(nil, nil, WithPIIHandlers(h))
+	mux := NewRouter(nil, WithPIIHandlers(h))
 
 	// A valid first JSON object followed by a huge valid JSON string that
 	// pushes the total body over the 8 MiB limit.
@@ -207,7 +207,7 @@ func TestOversizedBodyAllJSONRoutes(t *testing.T) {
 			return DetokenizeResponse{}, nil
 		},
 	}
-	mux := NewRouter(nil, nil, WithPIIHandlers(h), WithProcess(ProcessFunc(func(_ context.Context, _ process.Request) (process.Response, error) {
+	mux := NewRouter(nil, WithPIIHandlers(h), WithProcess(ProcessFunc(func(_ context.Context, _ process.Request) (process.Response, error) {
 		called = true
 		return process.Response{}, nil
 	})), WithRuntime(RuntimeFunc(func(_ context.Context, _ RuntimeRequest) (RuntimeResponse, error) {
@@ -252,7 +252,7 @@ func TestDetectOperationErrorIsSafe(t *testing.T) {
 			return DetectResponse{}, errors.New("secret internal detail")
 		},
 	}
-	mux := NewRouter(nil, nil, WithPIIHandlers(h))
+	mux := NewRouter(nil, WithPIIHandlers(h))
 	rec := doJSONRequest(t, mux, http.MethodPost, "/v1/pii/detect", `{"text":"x"}`)
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
@@ -263,7 +263,7 @@ func TestDetectOperationErrorIsSafe(t *testing.T) {
 }
 
 func TestDetectNilOperationFailsClosed(t *testing.T) {
-	mux := NewRouter(nil, nil, WithPIIHandlers(PIIHandlers{}))
+	mux := NewRouter(nil, WithPIIHandlers(PIIHandlers{}))
 	rec := doJSONRequest(t, mux, http.MethodPost, "/v1/pii/detect", `{"text":"x"}`)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
@@ -283,7 +283,7 @@ func TestTokenizeSuccess(t *testing.T) {
 			}, nil
 		},
 	}
-	mux := NewRouter(nil, nil, WithPIIHandlers(h))
+	mux := NewRouter(nil, WithPIIHandlers(h))
 	rec := doJSONRequest(t, mux, http.MethodPost, "/v1/pii/tokenize",
 		`{"text":"Клиент ТЕСТОВ","scope_id":"s1","ttl_seconds":900}`)
 	if rec.Code != http.StatusOK {
@@ -300,7 +300,7 @@ func TestTokenizeSuccess(t *testing.T) {
 }
 
 func TestTokenizeMissingScopeID(t *testing.T) {
-	mux := NewRouter(nil, nil, WithPIIHandlers(PIIHandlers{
+	mux := NewRouter(nil, WithPIIHandlers(PIIHandlers{
 		Tokenize: func(_ context.Context, _ TokenizeRequest) (TokenizeResponse, error) {
 			return TokenizeResponse{}, nil
 		},
@@ -321,7 +321,7 @@ func TestDetokenizeSuccess(t *testing.T) {
 			}, nil
 		},
 	}
-	mux := NewRouter(nil, nil, WithPIIHandlers(h))
+	mux := NewRouter(nil, WithPIIHandlers(h))
 	rec := doJSONRequest(t, mux, http.MethodPost, "/v1/pii/detokenize",
 		`{"text":"<FULL_NAME>","scope_id":"s1","mode":"preserve"}`)
 	if rec.Code != http.StatusOK {
@@ -338,7 +338,7 @@ func TestDetokenizeSuccess(t *testing.T) {
 }
 
 func TestDetokenizeInvalidMode(t *testing.T) {
-	mux := NewRouter(nil, nil, WithPIIHandlers(PIIHandlers{
+	mux := NewRouter(nil, WithPIIHandlers(PIIHandlers{
 		Detokenize: func(_ context.Context, _ DetokenizeRequest) (DetokenizeResponse, error) {
 			return DetokenizeResponse{}, nil
 		},
@@ -358,7 +358,7 @@ func TestRevokeScopeSuccess(t *testing.T) {
 			return nil
 		},
 	}
-	mux := NewRouter(nil, nil, WithPIIHandlers(h))
+	mux := NewRouter(nil, WithPIIHandlers(h))
 	rec := doJSONRequest(t, mux, http.MethodDelete, "/v1/pii/scopes/s1", "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -374,7 +374,7 @@ func TestRevokeScopeOperationErrorIsSafe(t *testing.T) {
 			return errors.New("vault secret detail")
 		},
 	}
-	mux := NewRouter(nil, nil, WithPIIHandlers(h))
+	mux := NewRouter(nil, WithPIIHandlers(h))
 	rec := doJSONRequest(t, mux, http.MethodDelete, "/v1/pii/scopes/s1", "")
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
@@ -385,7 +385,7 @@ func TestRevokeScopeOperationErrorIsSafe(t *testing.T) {
 }
 
 func TestPIIWrongMethodReturns405(t *testing.T) {
-	mux := NewRouter(nil, nil)
+	mux := NewRouter(nil)
 	for _, path := range []string{"/v1/pii/detect", "/v1/pii/tokenize", "/v1/pii/detokenize"} {
 		rec := doJSONRequest(t, mux, http.MethodGet, path, "")
 		if rec.Code != http.StatusMethodNotAllowed {
@@ -437,7 +437,7 @@ func TestPIIErrorResponseDoesNotLeakMarkers(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			mux := NewRouter(nil, nil, WithPIIHandlers(tc.h))
+			mux := NewRouter(nil, WithPIIHandlers(tc.h))
 			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
 			req.Header.Set("Authorization", authz)
 			rec := httptest.NewRecorder()

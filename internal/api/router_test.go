@@ -7,8 +7,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/klrushka/llm-proxy/internal/metrics"
 )
 
 func doRequest(t *testing.T, mux *http.ServeMux, method, path string) *httptest.ResponseRecorder {
@@ -20,7 +18,7 @@ func doRequest(t *testing.T, mux *http.ServeMux, method, path string) *httptest.
 }
 
 func TestLiveStatus(t *testing.T) {
-	mux := NewRouter(nil, nil)
+	mux := NewRouter(nil)
 	rec := doRequest(t, mux, http.MethodGet, "/health/live")
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -28,7 +26,7 @@ func TestLiveStatus(t *testing.T) {
 }
 
 func TestLiveContentType(t *testing.T) {
-	mux := NewRouter(nil, nil)
+	mux := NewRouter(nil)
 	rec := doRequest(t, mux, http.MethodGet, "/health/live")
 	if got := rec.Header().Get("Content-Type"); got != "application/json" {
 		t.Errorf("Content-Type = %q, want application/json", got)
@@ -36,7 +34,7 @@ func TestLiveContentType(t *testing.T) {
 }
 
 func TestLiveBody(t *testing.T) {
-	mux := NewRouter(nil, nil)
+	mux := NewRouter(nil)
 	rec := doRequest(t, mux, http.MethodGet, "/health/live")
 	var body map[string]string
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
@@ -48,7 +46,7 @@ func TestLiveBody(t *testing.T) {
 }
 
 func TestReadySuccess(t *testing.T) {
-	mux := NewRouter(func() error { return nil }, nil)
+	mux := NewRouter(func() error { return nil })
 	rec := doRequest(t, mux, http.MethodGet, "/health/ready")
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -56,7 +54,7 @@ func TestReadySuccess(t *testing.T) {
 }
 
 func TestReadyFailure(t *testing.T) {
-	mux := NewRouter(func() error { return errors.New("db down") }, nil)
+	mux := NewRouter(func() error { return errors.New("db down") })
 	rec := doRequest(t, mux, http.MethodGet, "/health/ready")
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
@@ -64,7 +62,7 @@ func TestReadyFailure(t *testing.T) {
 }
 
 func TestReadyNilProbeFailsClosed(t *testing.T) {
-	mux := NewRouter(nil, nil)
+	mux := NewRouter(nil)
 	rec := doRequest(t, mux, http.MethodGet, "/health/ready")
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
@@ -72,45 +70,24 @@ func TestReadyNilProbeFailsClosed(t *testing.T) {
 }
 
 func TestReadyErrorTextNotLeaked(t *testing.T) {
-	mux := NewRouter(func() error { return errors.New("secret internal detail") }, nil)
+	mux := NewRouter(func() error { return errors.New("secret internal detail") })
 	rec := doRequest(t, mux, http.MethodGet, "/health/ready")
 	if strings.Contains(rec.Body.String(), "secret internal detail") {
 		t.Errorf("body leaks internal error text: %q", rec.Body.String())
 	}
 }
 
-func TestMetricsHandlerCalled(t *testing.T) {
-	called := false
-	metrics := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		called = true
-		w.Header().Set("Content-Type", "text/plain")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
-	mux := NewRouter(nil, metrics)
+func TestAPIRouterDoesNotServeMetrics(t *testing.T) {
+	mux := NewRouter(nil)
 	rec := doRequest(t, mux, http.MethodGet, "/metrics")
-	if !called {
-		t.Error("metrics handler was not called")
-	}
-	if rec.Code != http.StatusOK {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
-	}
-	if rec.Body.String() != "ok" {
-		t.Errorf("body = %q, want ok", rec.Body.String())
-	}
-}
-
-func TestMetricsNilReturns503(t *testing.T) {
-	mux := NewRouter(nil, nil)
-	rec := doRequest(t, mux, http.MethodGet, "/metrics")
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d (metrics live on the internal listener)", rec.Code, http.StatusNotFound)
 	}
 }
 
 func TestWrongMethodReturns405(t *testing.T) {
-	mux := NewRouter(nil, nil)
-	for _, path := range []string{"/health/live", "/health/ready", "/metrics"} {
+	mux := NewRouter(nil)
+	for _, path := range []string{"/health/live", "/health/ready"} {
 		rec := doRequest(t, mux, http.MethodPost, path)
 		if rec.Code != http.StatusMethodNotAllowed {
 			t.Errorf("POST %s status = %d, want %d", path, rec.Code, http.StatusMethodNotAllowed)
@@ -119,32 +96,8 @@ func TestWrongMethodReturns405(t *testing.T) {
 }
 
 func TestRouterIsServeMux(t *testing.T) {
-	mux := NewRouter(nil, nil)
+	mux := NewRouter(nil)
 	if _, ok := any(mux).(*http.ServeMux); !ok {
 		t.Fatalf("NewRouter() = %T, want *http.ServeMux", mux)
-	}
-}
-
-func TestMetricsServesPrometheusFormat(t *testing.T) {
-	mux := NewRouter(nil, nil, WithMetrics(metrics.New(metrics.Options{Version: "test"})))
-
-	rec := doRequest(t, mux, http.MethodGet, "/metrics")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
-	}
-	if body := rec.Body.String(); !strings.Contains(body, "pii_build_info") {
-		t.Errorf("metrics body missing pii_build_info:\n%s", body)
-	}
-}
-
-func TestMetricsTakesPrecedenceOverPositionalHandler(t *testing.T) {
-	positional := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusTeapot)
-	})
-	mux := NewRouter(nil, positional, WithMetrics(metrics.New(metrics.Options{})))
-
-	rec := doRequest(t, mux, http.MethodGet, "/metrics")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d (metrics handler must win)", rec.Code, http.StatusOK)
 	}
 }

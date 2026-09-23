@@ -1,7 +1,7 @@
 ## 1. Основа
 
 - [x] 1.1 Подключить `prometheus/client_golang`: отдельный registry с `go_*`, `process_*` и `pii_build_info`; удалить старые гаужи `pii_latency_*`, `pii_rps`, `pii_tps` и оконный замер `recordProcess`; observable check: unit test вывода проходит.
-- [ ] 1.2 Добавить `PII_METRICS_LISTEN_ADDRESS` (по умолчанию `127.0.0.1:9464`) и поднять отдельный metrics listener; убрать `/metrics` с API listener, из consumer access и admission; observable check: wiring tests — `200` на metrics listener в обоих профилях, API listener метрики не отдаёт.
+- [x] 1.2 Добавить `PII_METRICS_LISTEN_ADDRESS` (по умолчанию `127.0.0.1:9464`) и поднять отдельный metrics listener; убрать `/metrics` с API listener, из consumer access и admission; observable check: wiring tests — `200` на metrics listener в обоих профилях, API listener метрики не отдаёт.
 
 ## 2. HTTP-метрики сервера
 
