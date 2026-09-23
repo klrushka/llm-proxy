@@ -1,42 +1,22 @@
-// Package policy defines consumer policy types for the /process adapter.
-// It covers the benchmark/default consumer, per-consumer allowed PII type
-// names, demasking and rules-only degraded mode, and transport-resolved
-// identity mapping. Transport authentication/trust establishment, config file
-// format, auth and the canonical PII registry are out of scope here.
+// Package policy defines the service's static PII processing policy.
 package policy
 
-// DefaultConsumerID is the stable identifier of the benchmark/default
-// consumer applied when no trusted transport identity is present.
-const DefaultConsumerID = "benchmark"
-
-// Policy describes the capabilities granted to a single consumer.
+// Policy describes enabled PII types and processing fallback behavior.
 type Policy struct {
-	consumerID string
-	types      map[string]struct{}
-	// AllowDemasking permits restoring original values from masks.
-	AllowDemasking bool
+	types map[string]struct{}
 	// AllowRulesOnlyDegraded permits rules-only processing when the model
 	// worker is unavailable. It is false by default (fail closed).
 	AllowRulesOnlyDegraded bool
 }
 
-// NewPolicy builds a Policy for the given consumer. The allowed type names
-// are copied, so later mutation of the input slice does not change the
-// policy. Boolean capabilities default to false.
-func NewPolicy(consumerID string, allowedTypes []string) Policy {
+// NewPolicy builds a static processing policy. The allowed type names are
+// copied, so later mutation of the input slice does not change the policy.
+func NewPolicy(allowedTypes []string) Policy {
 	types := make(map[string]struct{}, len(allowedTypes))
 	for _, name := range allowedTypes {
 		types[name] = struct{}{}
 	}
-	return Policy{
-		consumerID: consumerID,
-		types:      types,
-	}
-}
-
-// ConsumerID returns the consumer identifier.
-func (p Policy) ConsumerID() string {
-	return p.consumerID
+	return Policy{types: types}
 }
 
 // AllowsType reports whether the consumer may process the given PII type
@@ -54,15 +34,4 @@ func (p Policy) Types() []string {
 		out = append(out, name)
 	}
 	return out
-}
-
-// clone returns a deep copy of p. The private types map is cloned so later
-// mutation of the copy cannot affect the original.
-func (p Policy) clone() Policy {
-	types := make(map[string]struct{}, len(p.types))
-	for name := range p.types {
-		types[name] = struct{}{}
-	}
-	p.types = types
-	return p
 }

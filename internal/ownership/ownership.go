@@ -50,7 +50,7 @@ const (
 	ReasonPublicContext       ReasonCode = "public_context"
 	ReasonAmbiguous           ReasonCode = "ambiguous_context"
 	// ReasonTypeDisabledByPolicy explains that a personal entity type is
-	// excluded by the consumer policy and therefore not tokenized.
+	// excluded by the processing policy and therefore not tokenized.
 	ReasonTypeDisabledByPolicy ReasonCode = "type_disabled_by_policy"
 )
 

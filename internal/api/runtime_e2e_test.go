@@ -65,7 +65,7 @@ func newRuntimeMux(t *testing.T, llm *fakeLLM) *http.ServeMux {
 	})
 }
 
-// newRuntimeMuxWithPolicy is newRuntimeMux with an explicit consumer policy
+// newRuntimeMuxWithPolicy is newRuntimeMux with an explicit processing policy
 // allowing exactly the given canonical types.
 func newRuntimeMuxWithPolicy(t *testing.T, llm *fakeLLM, allowed []string) *http.ServeMux {
 	t.Helper()
@@ -77,7 +77,7 @@ func newRuntimeMuxWithPolicy(t *testing.T, llm *fakeLLM, allowed []string) *http
 	if err != nil {
 		t.Fatalf("tokenization.New() error = %v", err)
 	}
-	p := policy.NewPolicy(policy.DefaultConsumerID, allowed)
+	p := policy.NewPolicy(allowed)
 	pipe := NewPipeline(noModel, p, g, v)
 	coord := pipe.RuntimeCoordinator(llm.call)
 	return NewRouter(nil, nil, WithRuntime(RuntimeFuncFromCoordinator(coord)))
@@ -154,7 +154,7 @@ func TestRuntimeE2EProcessNeverCallsLLM(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tokenization.New() error = %v", err)
 	}
-	p := policy.NewPolicy(policy.DefaultConsumerID, []string{
+	p := policy.NewPolicy([]string{
 		string(detection.TypeEmail),
 		string(detection.TypePhone),
 	})

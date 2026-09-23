@@ -61,7 +61,7 @@ func (failingRevokeVault) RevokeScope(context.Context, string) error {
 // error is the one returned to the caller.
 func TestRevokeScopeClearsIssuerEvenWhenVaultFails(t *testing.T) {
 	issuer := &revokeRecordingIssuer{}
-	p := policy.NewPolicy(policy.DefaultConsumerID, []string{string(detection.TypeEmail)})
+	p := policy.NewPolicy([]string{string(detection.TypeEmail)})
 	pipe := NewPipeline(noModel, p, issuer, failingRevokeVault{})
 
 	err := pipe.revokeScope(context.Background(), "scope-1")
@@ -84,7 +84,7 @@ func TestRevokeScopeClearsBothVaultAndIssuer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("vault.NewMemory() error = %v", err)
 	}
-	p := policy.NewPolicy(policy.DefaultConsumerID, []string{string(detection.TypeEmail)})
+	p := policy.NewPolicy([]string{string(detection.TypeEmail)})
 	pipe := NewPipeline(noModel, p, issuer, v)
 
 	if err := pipe.revokeScope(context.Background(), "scope-1"); err != nil {
@@ -100,7 +100,7 @@ func TestRevokeScopeClearsBothVaultAndIssuer(t *testing.T) {
 func TestRevokeScopeCancelledContextHasNoSideEffects(t *testing.T) {
 	issuer := &revokeRecordingIssuer{}
 	v := &revokeRecordingVault{}
-	p := policy.NewPolicy(policy.DefaultConsumerID, []string{string(detection.TypeEmail)})
+	p := policy.NewPolicy([]string{string(detection.TypeEmail)})
 	pipe := NewPipeline(noModel, p, issuer, v)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -122,7 +122,7 @@ func TestRevokeScopeIssuerFailureSkipsVault(t *testing.T) {
 	wantErr := errors.New("issuer unavailable")
 	issuer := &revokeRecordingIssuer{err: wantErr}
 	v := &revokeRecordingVault{}
-	p := policy.NewPolicy(policy.DefaultConsumerID, []string{string(detection.TypeEmail)})
+	p := policy.NewPolicy([]string{string(detection.TypeEmail)})
 	pipe := NewPipeline(noModel, p, issuer, v)
 
 	err := pipe.revokeScope(context.Background(), "scope-1")
@@ -137,7 +137,7 @@ func TestRevokeScopeIssuerFailureSkipsVault(t *testing.T) {
 func TestRevokeScopeCancellationWhileWaitingForLifecycleLock(t *testing.T) {
 	issuer := &revokeRecordingIssuer{}
 	v := &revokeRecordingVault{}
-	p := policy.NewPolicy(policy.DefaultConsumerID, []string{string(detection.TypeEmail)})
+	p := policy.NewPolicy([]string{string(detection.TypeEmail)})
 	pipe := NewPipeline(noModel, p, issuer, v)
 
 	pipe.lifecycle.Lock()
@@ -196,7 +196,7 @@ func TestRevokeLinearizableWithInFlightTokenize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tokenization.New() error = %v", err)
 	}
-	p := policy.NewPolicy(policy.DefaultConsumerID, []string{string(detection.TypeEmail)})
+	p := policy.NewPolicy([]string{string(detection.TypeEmail)})
 	pipe := NewPipeline(noModel, p, g, blocking)
 
 	const text = "email ivanov@example.com"

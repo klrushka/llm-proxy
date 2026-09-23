@@ -12,10 +12,8 @@ import (
 var ErrModelUnavailable = errors.New("process: model worker unavailable")
 
 // WithRulesOnlyFallback composes a primary model-backed masker with a
-// rules-only fallback, gated by an explicit consumer capability. The boolean
-// represents the already-defined consumer policy capability
-// (policy.Policy.AllowRulesOnlyDegraded); transport resolution of that policy
-// is a later task and is not performed here. The returned MaskFunc never
+// rules-only fallback, gated by an explicit processing capability. The boolean
+// represents policy.Policy.AllowRulesOnlyDegraded. The returned MaskFunc never
 // returns the plaintext payload as the result.
 //
 // Behavior:

@@ -7,8 +7,6 @@ package api
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"sort"
 	"sync"
@@ -57,46 +55,11 @@ type Pipeline struct {
 }
 
 // NewPipeline builds a Pipeline from the injected model-worker boundary,
-// consumer policy, token issuer and vault. The rules, contextual, merge and
+// static processing policy, token issuer and vault. The rules, contextual, merge and
 // ownership stages are the real in-process implementations. The issuer must be
 // revocable so a scope revoke clears both the vault and the issuer cache.
 func NewPipeline(model ModelDetector, p policy.Policy, issuer tokenization.RevocableTokenIssuer, v vault.Vault) *Pipeline {
 	return &Pipeline{model: model, policy: p, issuer: issuer, vault: v}
-}
-
-// policyFor returns the trusted policy carried in ctx when the access-control
-// middleware set one, otherwise the pipeline's static fallback policy. The
-// static fallback preserves the existing behavior for internal calls and tests
-// that do not go through the middleware.
-func (p *Pipeline) policyFor(ctx context.Context) policy.Policy {
-	if pol, ok := policy.PolicyFromContext(ctx); ok {
-		return pol
-	}
-	return p.policy
-}
-
-// internalScope derives the deterministic, collision-safe vault namespace for
-// a caller scope under a consumer. It is keyed by both the consumer ID and the
-// caller scope so two different systems using the same external scope_id can
-// never read or revoke each other's mappings. The outward API always returns
-// the original caller scope; this namespace is used only internally by
-// tokenize, detokenize, revoke and the runtime flow.
-func internalScope(consumerID, callerScope string) string {
-	sum := sha256.Sum256([]byte(consumerID + "\x00" + callerScope))
-	return "ns_" + hex.EncodeToString(sum[:])
-}
-
-// scopeFor returns the vault scope for a caller scope. When a trusted policy is
-// present in ctx (set by the access-control middleware for the checker and
-// production profiles) it returns the namespaced scope keyed by that policy's
-// consumer ID. When no trusted policy is present (internal calls and tests that
-// do not go through the middleware) it returns the raw caller scope unchanged,
-// preserving the existing fallback behavior.
-func (p *Pipeline) scopeFor(ctx context.Context, callerScope string) string {
-	if pol, ok := policy.PolicyFromContext(ctx); ok {
-		return internalScope(pol.ConsumerID(), callerScope)
-	}
-	return callerScope
 }
 
 // Handlers returns the PIIHandlers backed by the real pipeline.
@@ -137,9 +100,9 @@ func (p *Pipeline) RuntimeCoordinator(llm runtime.LLMClient) *runtime.Coordinato
 }
 
 // detectEntities runs the full detection pipeline and returns ownership
-// results with the consumer policy applied. It never returns plaintext values.
+// results with the static processing policy applied. It never returns plaintext values.
 func (p *Pipeline) detectEntities(ctx context.Context, text string) ([]ownership.Entity, error) {
-	pol := p.policyFor(ctx)
+	pol := p.policy
 	var candidates []detection.Candidate
 	if p.model != nil {
 		mc, err := p.model(ctx, text)
@@ -311,7 +274,6 @@ func (p *Pipeline) tokenize(ctx context.Context, req TokenizeRequest) (TokenizeR
 			return TokenizeResponse{}, ErrReviewRequired
 		}
 	}
-	ns := p.scopeFor(ctx, req.ScopeID)
 	// Hold the lifecycle read lock across the whole issuance and persistence
 	// span (from the first issuer.Token through every vault.Save inside
 	// ReplaceAndPersist) so a concurrent revoke cannot interleave and leave a
@@ -321,7 +283,7 @@ func (p *Pipeline) tokenize(ctx context.Context, req TokenizeRequest) (TokenizeR
 		p.lifecycle.RUnlock()
 		return TokenizeResponse{}, err
 	}
-	res, err := tokenization.ReplaceAndPersist(ctx, req.Text, ns, results, p.issuer, p.vault)
+	res, err := tokenization.ReplaceAndPersist(ctx, req.Text, req.ScopeID, results, p.issuer, p.vault)
 	p.lifecycle.RUnlock()
 	if err != nil {
 		return TokenizeResponse{}, err
@@ -345,7 +307,6 @@ func (p *Pipeline) tokenize(ctx context.Context, req TokenizeRequest) (TokenizeR
 }
 
 func (p *Pipeline) detokenize(ctx context.Context, req DetokenizeRequest) (DetokenizeResponse, error) {
-	ns := p.scopeFor(ctx, req.ScopeID)
 	// Hold the lifecycle read lock across the whole restore so a concurrent
 	// revoke cannot clear a mapping mid-restore and yield a partial result.
 	p.lifecycle.RLock()
@@ -353,7 +314,7 @@ func (p *Pipeline) detokenize(ctx context.Context, req DetokenizeRequest) (Detok
 		p.lifecycle.RUnlock()
 		return DetokenizeResponse{}, err
 	}
-	res, err := tokenization.Detokenize(ctx, req.Text, ns, tokenization.Mode(req.Mode), p.vault)
+	res, err := tokenization.Detokenize(ctx, req.Text, req.ScopeID, tokenization.Mode(req.Mode), p.vault)
 	p.lifecycle.RUnlock()
 	if err != nil {
 		return DetokenizeResponse{}, err
@@ -366,7 +327,6 @@ func (p *Pipeline) detokenize(ctx context.Context, req DetokenizeRequest) (Detok
 }
 
 func (p *Pipeline) revokeScope(ctx context.Context, scopeID string) error {
-	ns := p.scopeFor(ctx, scopeID)
 	// Hold the lifecycle write lock across issuer and vault cleanup so revoke is
 	// linearizable with in-flight tokenize/detokenize operations. Clear the
 	// issuer first: if that fails, do not report success or remove the vault
@@ -376,10 +336,10 @@ func (p *Pipeline) revokeScope(ctx context.Context, scopeID string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := p.issuer.RevokeScope(ctx, ns); err != nil {
+	if err := p.issuer.RevokeScope(ctx, scopeID); err != nil {
 		return err
 	}
-	return p.vault.RevokeScope(ctx, ns)
+	return p.vault.RevokeScope(ctx, scopeID)
 }
 
 // entityFromOwnership maps an ownership result to the safe API entity

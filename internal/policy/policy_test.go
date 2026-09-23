@@ -5,21 +5,8 @@ import (
 	"testing"
 )
 
-func TestDefaultConsumerID(t *testing.T) {
-	if DefaultConsumerID == "" {
-		t.Fatal("DefaultConsumerID must not be empty")
-	}
-}
-
-func TestNewPolicyConsumerID(t *testing.T) {
-	p := NewPolicy(DefaultConsumerID, nil)
-	if p.ConsumerID() != DefaultConsumerID {
-		t.Errorf("ConsumerID() = %q, want %q", p.ConsumerID(), DefaultConsumerID)
-	}
-}
-
 func TestAllowsTypeEnabled(t *testing.T) {
-	p := NewPolicy("consumer-a", []string{"EMAIL", "PHONE"})
+	p := NewPolicy([]string{"EMAIL", "PHONE"})
 	if !p.AllowsType("EMAIL") {
 		t.Error("AllowsType(EMAIL) = false, want true")
 	}
@@ -29,7 +16,7 @@ func TestAllowsTypeEnabled(t *testing.T) {
 }
 
 func TestAllowsTypeDisabled(t *testing.T) {
-	p := NewPolicy("consumer-a", []string{"EMAIL"})
+	p := NewPolicy([]string{"EMAIL"})
 	if p.AllowsType("PHONE") {
 		t.Error("AllowsType(PHONE) = true, want false")
 	}
@@ -39,29 +26,22 @@ func TestAllowsTypeDisabled(t *testing.T) {
 }
 
 func TestAllowsTypeEmptyPolicy(t *testing.T) {
-	p := NewPolicy("consumer-a", nil)
+	p := NewPolicy(nil)
 	if p.AllowsType("EMAIL") {
 		t.Error("AllowsType(EMAIL) = true for empty policy, want false")
 	}
 }
 
 func TestCapabilitiesDefaultFalse(t *testing.T) {
-	p := NewPolicy(DefaultConsumerID, nil)
-	if p.AllowDemasking {
-		t.Error("AllowDemasking = true by default, want false")
-	}
+	p := NewPolicy(nil)
 	if p.AllowRulesOnlyDegraded {
 		t.Error("AllowRulesOnlyDegraded = true by default, want false")
 	}
 }
 
 func TestCapabilitiesReflectExplicitPolicy(t *testing.T) {
-	p := NewPolicy(DefaultConsumerID, nil)
-	p.AllowDemasking = true
+	p := NewPolicy(nil)
 	p.AllowRulesOnlyDegraded = true
-	if !p.AllowDemasking {
-		t.Error("AllowDemasking = false, want true")
-	}
 	if !p.AllowRulesOnlyDegraded {
 		t.Error("AllowRulesOnlyDegraded = false, want true")
 	}
@@ -69,7 +49,7 @@ func TestCapabilitiesReflectExplicitPolicy(t *testing.T) {
 
 func TestPolicyCopiesInputTypes(t *testing.T) {
 	allowed := []string{"EMAIL"}
-	p := NewPolicy("consumer-a", allowed)
+	p := NewPolicy(allowed)
 	allowed[0] = "PHONE"
 	if !p.AllowsType("EMAIL") {
 		t.Error("policy changed after input slice mutation")
@@ -80,7 +60,7 @@ func TestPolicyCopiesInputTypes(t *testing.T) {
 }
 
 func TestTypesReturnsCopy(t *testing.T) {
-	p := NewPolicy("consumer-a", []string{"EMAIL", "PHONE"})
+	p := NewPolicy([]string{"EMAIL", "PHONE"})
 	got := p.Types()
 	got[0] = "MUTATED"
 	if !p.AllowsType("EMAIL") {
@@ -89,7 +69,7 @@ func TestTypesReturnsCopy(t *testing.T) {
 }
 
 func TestTypesReflectsPolicy(t *testing.T) {
-	p := NewPolicy("consumer-a", []string{"EMAIL", "PHONE"})
+	p := NewPolicy([]string{"EMAIL", "PHONE"})
 	got := p.Types()
 	want := []string{"EMAIL", "PHONE"}
 	if !reflect.DeepEqual(sortStrings(got), sortStrings(want)) {

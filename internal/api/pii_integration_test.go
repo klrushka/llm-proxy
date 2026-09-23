@@ -38,7 +38,7 @@ func newIntegrationMux(t *testing.T) *http.ServeMux {
 	if err != nil {
 		t.Fatalf("tokenization.New() error = %v", err)
 	}
-	p := policy.NewPolicy(policy.DefaultConsumerID, []string{
+	p := policy.NewPolicy([]string{
 		string(detection.TypeEmail),
 		string(detection.TypePhone),
 	})

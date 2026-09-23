@@ -506,7 +506,7 @@ func TestExplicitHighRiskTypeDisabledByPolicy(t *testing.T) {
 		ent(detection.TypePassportNumber, passStart, passStart+len("00 00 000000"), 1.0, detection.SourceRegex),
 	}
 	assessed := Assess(text, in)
-	p := policy.NewPolicy("consumer-a", []string{string(detection.TypeFullName)})
+	p := policy.NewPolicy([]string{string(detection.TypeFullName)})
 
 	got := ApplyPolicy(assessed, p)
 	if len(got) != 2 {
@@ -857,7 +857,7 @@ func TestApplyPolicyAllowsTypeUnchanged(t *testing.T) {
 		ent(detection.TypePassportNumber, passStart, passStart+len("00 00 000000"), 1.0, detection.SourceRegex),
 	}
 	assessed := Assess(text, in)
-	p := policy.NewPolicy("consumer-a", []string{string(detection.TypeFullName), string(detection.TypePassportNumber)})
+	p := policy.NewPolicy([]string{string(detection.TypeFullName), string(detection.TypePassportNumber)})
 
 	got := ApplyPolicy(assessed, p)
 	if len(got) != 2 {
@@ -885,7 +885,7 @@ func TestApplyPolicyExcludesType(t *testing.T) {
 		ent(detection.TypePassportNumber, passStart, passStart+len("00 00 000000"), 1.0, detection.SourceRegex),
 	}
 	assessed := Assess(text, in)
-	p := policy.NewPolicy("consumer-a", []string{string(detection.TypeFullName)})
+	p := policy.NewPolicy([]string{string(detection.TypeFullName)})
 
 	got := ApplyPolicy(assessed, p)
 	if len(got) != 2 {
@@ -928,7 +928,7 @@ func TestApplyPolicyMixedEnabledDisabled(t *testing.T) {
 		ent(detection.TypeEmail, emailStart, emailStart+len("ivanov@example.com"), 0.95, detection.SourceRegex),
 	}
 	assessed := Assess(text, in)
-	p := policy.NewPolicy("consumer-a", []string{string(detection.TypeFullName), string(detection.TypeEmail)})
+	p := policy.NewPolicy([]string{string(detection.TypeFullName), string(detection.TypeEmail)})
 
 	got := ApplyPolicy(assessed, p)
 	if len(got) != 3 {
@@ -962,7 +962,7 @@ func TestApplyPolicyLeavesNonPersonalUnchanged(t *testing.T) {
 		ent(detection.TypeAddressCity, locStart, locStart+len("Тестовск"), 0.9, detection.SourceGliner),
 	}
 	assessed := Assess(text, in)
-	p := policy.NewPolicy("consumer-a", []string{string(detection.TypeFullName)})
+	p := policy.NewPolicy([]string{string(detection.TypeFullName)})
 
 	got := ApplyPolicy(assessed, p)
 	if len(got) != 3 {
@@ -990,7 +990,7 @@ func TestApplyPolicyDeterministicReasonOrder(t *testing.T) {
 		ent(detection.TypePassportNumber, passStart, passStart+len("00 00 000000"), 1.0, detection.SourceRegex),
 	}
 	assessed := Assess(text, in)
-	p := policy.NewPolicy("consumer-a", []string{string(detection.TypeFullName)})
+	p := policy.NewPolicy([]string{string(detection.TypeFullName)})
 
 	got := ApplyPolicy(assessed, p)
 	pass := find(t, got, detection.TypePassportNumber)
@@ -1020,7 +1020,7 @@ func TestApplyPolicyNoAliasing(t *testing.T) {
 	for i, e := range assessed {
 		orig[i] = copyEntityResult(e)
 	}
-	p := policy.NewPolicy("consumer-a", []string{string(detection.TypeFullName)})
+	p := policy.NewPolicy([]string{string(detection.TypeFullName)})
 
 	got := ApplyPolicy(assessed, p)
 	if !reflect.DeepEqual(assessed, orig) {
@@ -1036,7 +1036,7 @@ func TestApplyPolicyNoAliasing(t *testing.T) {
 }
 
 func TestApplyPolicyEmptyAndNil(t *testing.T) {
-	p := policy.NewPolicy("consumer-a", nil)
+	p := policy.NewPolicy(nil)
 	if got := ApplyPolicy(nil, p); got != nil {
 		t.Errorf("ApplyPolicy(nil) = %+v, want nil", got)
 	}

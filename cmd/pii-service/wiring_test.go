@@ -23,7 +23,6 @@ func loadWiringConfig(t *testing.T, key string, ttl time.Duration) config.Config
 	t.Helper()
 	t.Setenv("PII_VAULT_KEY", key)
 	t.Setenv("PII_VAULT_TTL", ttl.String())
-	t.Setenv("PII_ACCESS_PROFILE", config.AccessProfileChecker)
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatalf("config.Load() error = %v", err)
@@ -52,7 +51,7 @@ func newProductionPipeline(t *testing.T, cfg config.Config) (*api.Pipeline, api.
 	for _, typ := range reg.Types() {
 		allowed = append(allowed, string(typ))
 	}
-	p := policy.NewPolicy(policy.DefaultConsumerID, allowed)
+	p := policy.NewPolicy(allowed)
 	pipe := api.NewPipeline(nil, p, issuer, v)
 	return pipe, pipe.Handlers()
 }

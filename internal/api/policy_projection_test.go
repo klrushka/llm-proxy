@@ -42,7 +42,7 @@ func overlapModelDetector(nameStart, nameEnd int) ModelDetector {
 }
 
 // newPolicyProjectionPipeline builds the real pipeline with the in-memory
-// vault, token issuer, the injected model detector and a consumer policy
+// vault, token issuer, the injected model detector and a processing policy
 // allowing exactly the given types.
 func newPolicyProjectionPipeline(t *testing.T, detector ModelDetector, allowed ...string) *Pipeline {
 	t.Helper()
@@ -54,7 +54,7 @@ func newPolicyProjectionPipeline(t *testing.T, detector ModelDetector, allowed .
 	if err != nil {
 		t.Fatalf("tokenization.New() error = %v", err)
 	}
-	p := policy.NewPolicy(policy.DefaultConsumerID, allowed)
+	p := policy.NewPolicy(allowed)
 	return NewPipeline(detector, p, g, v)
 }
 

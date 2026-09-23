@@ -249,16 +249,16 @@ func TestWithRulesOnlyFallbackRulesOnlyFailureSanitized(t *testing.T) {
 }
 
 func TestWithRulesOnlyFallbackPolicyCapabilityDemonstration(t *testing.T) {
-	// Demonstrates that the zero-value/default consumer policy capability is
+	// Demonstrates that the zero-value processing policy capability is
 	// false (denies fallback) and that an explicitly enabled capability allows
 	// it. policy is used only in this test; production process code does not
 	// import the policy package.
-	denied := policy.NewPolicy(policy.DefaultConsumerID, nil)
+	denied := policy.NewPolicy(nil)
 	if denied.AllowRulesOnlyDegraded {
 		t.Fatal("default AllowRulesOnlyDegraded = true, want false")
 	}
 
-	allowed := policy.NewPolicy(policy.DefaultConsumerID, nil)
+	allowed := policy.NewPolicy(nil)
 	allowed.AllowRulesOnlyDegraded = true
 
 	var rulesCalls atomic.Int64
