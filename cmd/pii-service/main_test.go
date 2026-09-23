@@ -1401,3 +1401,49 @@ func TestMetricsMeasureOverloadRejections(t *testing.T) {
 		t.Errorf("429 not measured")
 	}
 }
+
+// TestMetricsMeasureLLMCalls proves the runtime route's downstream LLM call is
+// measured as an outbound llm/chat request without any request data.
+func TestMetricsMeasureLLMCalls(t *testing.T) {
+	// The stub echoes the protected user message so the token sequence is kept.
+	llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || len(in.Messages) == 0 {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []any{map[string]any{"message": map[string]string{"role": "assistant", "content": in.Messages[len(in.Messages)-1].Content}}},
+		})
+	}))
+	defer llm.Close()
+
+	pipe, handlers := newTestPipeline(t)
+	op := process.NewOperation(process.NewStore(), func(context.Context, string) (string, error) { return "", nil })
+	cfg := config.Config{LLM: config.LLMConfig{URL: llm.URL, Model: "test-model", Timeout: 5 * time.Second}}
+	m := metrics.New(metrics.Options{})
+	mux, err := buildRouter(cfg, pipe, handlers, op, m)
+	if err != nil {
+		t.Fatalf("buildRouter() error = %v", err)
+	}
+	handler := composeHandler(cfg, audit.New(io.Discard), mux, m, maxConcurrentRequests)
+
+	rec := doJSON(t, handler, http.MethodPost, "/v1/runtime/chat",
+		`{"text":"Напишите на ivanov@example.com","scope_id":"s1"}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %q", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := scrapeMetrics(t, m)
+	want := `http_client_request_duration_seconds_count{error_type="",http_request_method="POST",http_response_status_code="200",operation="chat",server="llm"} 1`
+	if !strings.Contains(body, want) {
+		t.Errorf("metrics missing %q", want)
+	}
+	if strings.Contains(body, "ivanov") || strings.Contains(body, llm.URL) {
+		t.Errorf("metrics leak request data")
+	}
+}

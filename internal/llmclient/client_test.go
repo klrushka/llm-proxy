@@ -301,3 +301,32 @@ func TestCompleteDoesNotFollowRedirect(t *testing.T) {
 		t.Errorf("redirect target hits = %d, want 0", targetHits)
 	}
 }
+
+// recordingTransport records that it was used and delegates to the default
+// transport.
+type recordingTransport struct{ used bool }
+
+func (r *recordingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	r.used = true
+	return http.DefaultTransport.RoundTrip(req)
+}
+
+func TestConfigTransportIsUsed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}]}`))
+	}))
+	defer srv.Close()
+
+	rt := &recordingTransport{}
+	c, err := New(Config{URL: srv.URL, Model: "test-model", Timeout: 5 * time.Second, Transport: rt})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if _, err := c.Complete(context.Background(), "protected"); err != nil {
+		t.Fatalf("Complete() error = %v", err)
+	}
+	if !rt.used {
+		t.Error("configured transport was not used")
+	}
+}

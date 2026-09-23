@@ -71,6 +71,9 @@ type Config struct {
 	APIKey string
 	// Timeout bounds each request. It must be greater than zero.
 	Timeout time.Duration
+	// Transport is the optional HTTP transport, for example an instrumented
+	// one. Nil uses the default transport.
+	Transport http.RoundTripper
 }
 
 // New validates its inputs and returns a Client. It rejects a non-http(s) URL,
@@ -101,7 +104,8 @@ func New(cfg Config) (*Client, error) {
 		model:    cfg.Model,
 		apiKey:   cfg.APIKey,
 		http: &http.Client{
-			Timeout: cfg.Timeout,
+			Timeout:   cfg.Timeout,
+			Transport: cfg.Transport,
 			// Redirects are not part of this proxy contract. Returning
 			// ErrUseLastResponse makes the client return the first redirect
 			// response without following it, so the protected request body is

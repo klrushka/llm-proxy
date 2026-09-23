@@ -305,10 +305,11 @@ func buildRouter(cfg config.Config, pipe *api.Pipeline, handlers api.PIIHandlers
 	}
 	if cfg.LLM.Enabled() {
 		llm, err := llmclient.New(llmclient.Config{
-			URL:     cfg.LLM.URL,
-			Model:   cfg.LLM.Model,
-			APIKey:  cfg.LLM.APIKey,
-			Timeout: cfg.LLM.Timeout,
+			URL:       cfg.LLM.URL,
+			Model:     cfg.LLM.Model,
+			APIKey:    cfg.LLM.APIKey,
+			Timeout:   cfg.LLM.Timeout,
+			Transport: m.InstrumentTransport("llm", func(*http.Request) string { return "chat" }, nil),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("llm client: %w", err)
