@@ -175,6 +175,10 @@ func handleTokenize(op TokenizeFunc) http.HandlerFunc {
 			writeJSONError(w, http.StatusServiceUnavailable, "model worker unavailable")
 			return
 		}
+		if errors.Is(err, ErrReviewRequired) {
+			writeReviewRequired(w)
+			return
+		}
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "tokenize failed")
 			return
@@ -274,4 +278,11 @@ func writeJSONBody(w http.ResponseWriter, status int, body any) {
 // generic string and never includes internal error details.
 func writeJSONError(w http.ResponseWriter, status int, message string) {
 	writeJSONBody(w, status, errorResponse{Error: message})
+}
+
+func writeReviewRequired(w http.ResponseWriter) {
+	writeJSONBody(w, http.StatusUnprocessableEntity, struct {
+		Error          string `json:"error"`
+		ReviewRequired bool   `json:"review_required"`
+	}{Error: "review required", ReviewRequired: true})
 }

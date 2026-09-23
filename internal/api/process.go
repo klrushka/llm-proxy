@@ -97,6 +97,10 @@ func handleProcess(fn ProcessFunc) http.HandlerFunc {
 				writeJSONError(w, http.StatusConflict, "payload conflicts with existing record")
 				return
 			}
+			if errors.Is(err, process.ErrReviewRequired) {
+				writeReviewRequired(w)
+				return
+			}
 			if errors.Is(err, process.ErrVaultUnavailable) {
 				// Safe fail-closed: generic body, no result/payload/internal
 				// detail, and no Retry-After (distinct from overload).

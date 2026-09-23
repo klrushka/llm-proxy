@@ -18,6 +18,10 @@ var ErrMaskingFailed = errors.New("process: masking failed")
 // input payload, the wrapped dependency error, its message or any plaintext.
 var ErrVaultUnavailable = errors.New("process: vault unavailable")
 
+// ErrReviewRequired marks an ambiguous entity that needs review. It never
+// carries the entity value, text, offsets or source-specific details.
+var ErrReviewRequired = errors.New("process: review required")
+
 // ErrConflict is returned when a ready record already exists for a payload_id
 // and the incoming payload matches neither the stored original nor the
 // previously issued result. It is a safe sentinel that never carries the
@@ -80,6 +84,8 @@ func (o *Operation) handleFirst(ctx context.Context, req Request, e *entry) (Res
 		switch {
 		case errors.Is(err, ErrVaultUnavailable):
 			failErr = ErrVaultUnavailable
+		case errors.Is(err, ErrReviewRequired):
+			failErr = ErrReviewRequired
 		case errors.Is(err, ErrModelUnavailable):
 			failErr = ErrModelUnavailable
 		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):

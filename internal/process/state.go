@@ -272,6 +272,8 @@ func (s *Store) expireClaim(payloadID string, failErr error) error {
 	switch {
 	case errors.Is(failErr, ErrVaultUnavailable):
 		e.failErr = ErrVaultUnavailable
+	case errors.Is(failErr, ErrReviewRequired):
+		e.failErr = ErrReviewRequired
 	case errors.Is(failErr, ErrModelUnavailable):
 		e.failErr = ErrModelUnavailable
 	default:

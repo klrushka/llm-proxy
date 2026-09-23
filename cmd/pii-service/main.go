@@ -141,6 +141,9 @@ func run() error {
 			if errors.Is(err, modelclient.ErrModelUnavailable) {
 				return "", process.ErrModelUnavailable
 			}
+			if errors.Is(err, api.ErrReviewRequired) {
+				return "", process.ErrReviewRequired
+			}
 			return "", err
 		}
 		return res.TokenizedText, nil
