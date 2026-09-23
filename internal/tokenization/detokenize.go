@@ -17,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"slices"
 	"sort"
 
 	"github.com/klrushka/llm-proxy/internal/vault"
@@ -95,6 +96,16 @@ func (e *resolverError) Is(target error) bool {
 // <PII_TYPE_32-lowercase-hex>, where the canonical type contains only A-Z and
 // underscore and the suffix is exactly 32 lowercase hex characters.
 var tokenPattern = regexp.MustCompile(`<[A-Z_]+_[0-9a-f]{32}>`)
+
+// TokensMatch reports whether the sequence and multiplicity of every opaque
+// token in got exactly matches those in want. Ordinary text surrounding the
+// tokens may differ freely. It is the fail-closed integrity check used at the
+// LLM boundary: it verifies the LLM neither removed, duplicated, reordered,
+// replaced nor injected a token from the same scope before restoration. It
+// never returns or logs the tokens themselves.
+func TokensMatch(want, got string) bool {
+	return slices.Equal(tokenPattern.FindAllString(want, -1), tokenPattern.FindAllString(got, -1))
+}
 
 // Detokenize restores tokens in text for the given scope without running NER.
 //

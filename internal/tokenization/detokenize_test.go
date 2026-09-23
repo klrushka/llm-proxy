@@ -411,3 +411,87 @@ func TestDetokenizePreserveRepeatedUnknownTokenOnce(t *testing.T) {
 		t.Errorf("repeated unknown token resolved %d times, want 1", n)
 	}
 }
+
+func TestTokensMatch(t *testing.T) {
+	const (
+		email = "<EMAIL_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa>"
+		phone = "<PHONE_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb>"
+		name  = "<FULL_NAME_cccccccccccccccccccccccccccccccc>"
+	)
+
+	cases := []struct {
+		name string
+		want string
+		got  string
+		ok   bool
+	}{
+		{
+			name: "preserved tokens with changed surrounding text",
+			want: "Клиент " + email + " и " + phone,
+			got:  "Переписал: " + email + " теперь " + phone,
+			ok:   true,
+		},
+		{
+			name: "no tokens on either side",
+			want: "обычный текст",
+			got:  "совсем другой текст",
+			ok:   true,
+		},
+		{
+			name: "removed token",
+			want: email + " и " + phone,
+			got:  email,
+			ok:   false,
+		},
+		{
+			name: "duplicated token",
+			want: email,
+			got:  email + " " + email,
+			ok:   false,
+		},
+		{
+			name: "reordered two distinct tokens",
+			want: email + " " + phone,
+			got:  phone + " " + email,
+			ok:   false,
+		},
+		{
+			name: "replaced suffix",
+			want: email,
+			got:  "<EMAIL_ffffffffffffffffffffffffffffffff>",
+			ok:   false,
+		},
+		{
+			name: "replaced type",
+			want: email,
+			got:  "<PHONE_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa>",
+			ok:   false,
+		},
+		{
+			name: "injected token-shaped value absent from input",
+			want: email,
+			got:  email + " " + name,
+			ok:   false,
+		},
+		{
+			name: "exact multiplicity of repeated token",
+			want: email + " " + email + " " + email,
+			got:  email + " " + email + " " + email,
+			ok:   true,
+		},
+		{
+			name: "wrong multiplicity of repeated token",
+			want: email + " " + email,
+			got:  email + " " + email + " " + email,
+			ok:   false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := TokensMatch(tc.want, tc.got); got != tc.ok {
+				t.Errorf("TokensMatch() = %v, want %v", got, tc.ok)
+			}
+		})
+	}
+}

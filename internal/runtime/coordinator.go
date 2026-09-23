@@ -13,6 +13,8 @@ package runtime
 import (
 	"context"
 	"errors"
+
+	"github.com/klrushka/llm-proxy/internal/tokenization"
 )
 
 // Protector masks/tokenizes user text into protected text for a scope. It is
@@ -82,6 +84,13 @@ func (c *Coordinator) Run(ctx context.Context, scope, text string) (string, erro
 	}
 	llmOut, err := c.llm(ctx, protected)
 	if err != nil {
+		return "", ErrLLMFailed
+	}
+
+	// Fail closed if the LLM altered the opaque token sequence: it must not
+	// remove, duplicate, reorder, replace or inject a token from the same
+	// scope before restoration. Ordinary surrounding text may change freely.
+	if !tokenization.TokensMatch(protected, llmOut) {
 		return "", ErrLLMFailed
 	}
 
