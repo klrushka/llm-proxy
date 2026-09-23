@@ -14,10 +14,13 @@ produced by task 13.1.
 
 ## Current runtime status (do not overclaim)
 
-- `POST /v1/runtime/chat` is registered but **fails closed with `503`** because
-  no real LLM client is configured. The full LLM path is **not** live.
+- `POST /v1/runtime/chat` runs the full product flow (mask -> downstream LLM ->
+  demask) when the complete LLM configuration group is set (`PII_LLM_URL` and
+  `PII_LLM_MODEL`). When the group is absent the route fails closed with `503`
+  so `POST /process` can run alone.
 - The benchmark adapter `POST /process` (mask/restore) and the extended
-  `/v1/pii/*` API are the live, testable surface.
+  `/v1/pii/*` API are the live, testable surface. `POST /process` never calls
+  the LLM.
 - The vault is the **in-memory demo adapter**: token mappings do not survive a
   container restart. The only persistent state is the `hf-cache` Docker volume
   holding the downloaded Hugging Face models.
@@ -74,6 +77,15 @@ host-local env file.
 | `PII_MODEL_CLIENT_TIMEOUT` | `30s` | no | Timeout for worker calls. |
 | `PII_API_LISTEN_ADDRESS` | `127.0.0.1:8080` | no | Overridden to `0.0.0.0:8080` by the compose file. |
 | `PII_MODEL_WORKER_URL` | `http://127.0.0.1:8000` | no | Overridden to `http://model-worker:8000` by the compose file. |
+| `PII_LLM_URL` | — | no | URL of a chat-completions-compatible downstream LLM. Optional as a group with `PII_LLM_MODEL`. |
+| `PII_LLM_MODEL` | — | no | Model identifier sent in the outbound JSON. Optional as a group with `PII_LLM_URL`. |
+| `PII_LLM_API_KEY` | — | no | Sent as `Authorization: Bearer` when non-empty; no header when empty. |
+| `PII_LLM_TIMEOUT` | `60s` | no | Timeout for downstream LLM calls. |
+
+The LLM group is optional as a whole: `PII_LLM_URL` and `PII_LLM_MODEL` must be
+set together. When both are absent, `POST /v1/runtime/chat` fails closed with
+`503` and `POST /process` runs alone. Any partial configuration is a startup
+validation error.
 
 Create the shared env file once. The key is generated at runtime, written
 directly to the file (never printed to the terminal), and all temporary
@@ -247,6 +259,16 @@ echo "mask: $MASK"
 curl -fsS -X POST http://localhost:8080/process \
   -H 'Content-Type: application/json' \
   -d "{\"payload\":\"$MASK\",\"payload_id\":\"runbook-demo\"}" \
+  | jq -r .result
+
+# 4b. Runtime smoke (synthetic data only). Run this when the env file
+#     (/srv/llm-proxy/env) contains the complete LLM group (PII_LLM_URL and
+#     PII_LLM_MODEL). Those values live in the env file and are not exported
+#     into this shell, so no conditional is used here. If the group is absent,
+#     the route fails closed with 503 and this command returns that status.
+curl -fsS -X POST http://localhost:8080/v1/runtime/chat \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"Клиент Иванов Иван, телефон +7 900 123-45-67, email ivanov@example.com","scope_id":"runbook-runtime"}' \
   | jq -r .result
 
 # 5. Logs and status

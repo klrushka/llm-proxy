@@ -72,7 +72,7 @@ func newRuntimeMux(t *testing.T, llm *fakeLLM) *http.ServeMux {
 	})
 	pipe := NewPipeline(noModel, p, g, v)
 	coord := pipe.RuntimeCoordinator(llm.call)
-	return NewRouter(nil, nil, WithRuntime(runtimeFromCoordinator(coord)))
+	return NewRouter(nil, nil, WithRuntime(RuntimeFuncFromCoordinator(coord)))
 }
 
 // TestRuntimeE2EMaskLLMDemask is the automated E2E for task 12.7: the full
@@ -163,7 +163,7 @@ func TestRuntimeE2EProcessNeverCallsLLM(t *testing.T) {
 		return res.TokenizedText, nil
 	})
 	mux := NewRouter(nil, nil,
-		WithRuntime(runtimeFromCoordinator(coord)),
+		WithRuntime(RuntimeFuncFromCoordinator(coord)),
 		WithProcess(op.Handle),
 	)
 

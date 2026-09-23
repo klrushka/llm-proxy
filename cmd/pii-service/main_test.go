@@ -11,8 +11,15 @@ import (
 	"time"
 
 	"github.com/klrushka/llm-proxy/internal/api"
+	"github.com/klrushka/llm-proxy/internal/audit"
+	"github.com/klrushka/llm-proxy/internal/config"
 	"github.com/klrushka/llm-proxy/internal/detection"
+	"github.com/klrushka/llm-proxy/internal/metrics"
 	"github.com/klrushka/llm-proxy/internal/modelclient"
+	"github.com/klrushka/llm-proxy/internal/policy"
+	"github.com/klrushka/llm-proxy/internal/process"
+	"github.com/klrushka/llm-proxy/internal/tokenization"
+	"github.com/klrushka/llm-proxy/internal/vault"
 )
 
 // entityJSON builds a single entity object for a worker response. It is a
@@ -128,5 +135,70 @@ func TestModelDetectorDropsUnknownSourceAndLabel(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("len(candidates) = %d, want 0: %+v", len(got), got)
+	}
+}
+
+// newTestPipeline builds the real pipeline with the in-memory vault and a
+// rules-only detector (no model worker), mirroring the fast-mode wiring.
+func newTestPipeline(t *testing.T) (*api.Pipeline, api.PIIHandlers) {
+	t.Helper()
+	v, err := vault.NewMemory(time.Hour)
+	if err != nil {
+		t.Fatalf("vault.NewMemory() error = %v", err)
+	}
+	g, err := tokenization.New()
+	if err != nil {
+		t.Fatalf("tokenization.New() error = %v", err)
+	}
+	reg, err := detection.New()
+	if err != nil {
+		t.Fatalf("detection.New() error = %v", err)
+	}
+	allowed := make([]string, 0, len(reg.Types()))
+	for _, typ := range reg.Types() {
+		allowed = append(allowed, string(typ))
+	}
+	p := policy.NewPolicy(policy.DefaultConsumerID, allowed)
+	pipe := api.NewPipeline(nil, p, g, v)
+	return pipe, pipe.Handlers()
+}
+
+// TestBuildRouterUnconfiguredLLMNoPanic proves that constructing the router
+// with an absent LLM configuration group does not panic and leaves
+// /v1/runtime/chat fail-closed with 503 while /process still works. This is a
+// regression test for the defect where a nil WithRuntime option was passed to
+// NewRouter, which calls every option unconditionally.
+func TestBuildRouterUnconfiguredLLMNoPanic(t *testing.T) {
+	pipe, handlers := newTestPipeline(t)
+	op := process.NewOperation(process.NewStore(), func(ctx context.Context, payload string) (string, error) {
+		res, err := handlers.Tokenize(ctx, api.TokenizeRequest{Text: payload, ScopeID: processScope})
+		if err != nil {
+			return "", err
+		}
+		return res.TokenizedText, nil
+	})
+	regMetrics := metrics.NewRegistry(time.Minute)
+	logger := audit.New(httptest.NewRecorder())
+
+	cfg := config.Config{LLM: config.LLMConfig{Timeout: config.DefaultLLMTimeout}}
+	mux, err := buildRouter(cfg, pipe, handlers, op, regMetrics, logger)
+	if err != nil {
+		t.Fatalf("buildRouter() error = %v", err)
+	}
+
+	// /v1/runtime/chat must fail closed with 503, not panic.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/runtime/chat", strings.NewReader(`{"text":"x","scope_id":"s1"}`))
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("runtime status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+
+	// /process must still work.
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodPost, "/process", strings.NewReader(`{"payload":"Клиент Иванов Иван, телефон +7 900 123-45-67, email ivanov@example.com","payload_id":"id-1"}`))
+	mux.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("process status = %d, want %d; body = %q", rec2.Code, http.StatusOK, rec2.Body.String())
 	}
 }

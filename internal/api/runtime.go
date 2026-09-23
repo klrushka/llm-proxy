@@ -77,10 +77,10 @@ func handleRuntime(fn RuntimeFunc) http.HandlerFunc {
 	}
 }
 
-// runtimeFromCoordinator adapts a *runtime.Coordinator to a RuntimeFunc. It
+// RuntimeFuncFromCoordinator adapts a *runtime.Coordinator to a RuntimeFunc. It
 // never leaks the coordinator's safe sentinel error text into the response;
 // the handler writes a fixed generic body on any error.
-func runtimeFromCoordinator(c *runtime.Coordinator) RuntimeFunc {
+func RuntimeFuncFromCoordinator(c *runtime.Coordinator) RuntimeFunc {
 	return func(ctx context.Context, req RuntimeRequest) (RuntimeResponse, error) {
 		result, err := c.Run(ctx, req.ScopeID, req.Text)
 		if err != nil {

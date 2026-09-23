@@ -40,7 +40,7 @@ func TestRuntimeHTTPFailsClosedOnProtectError(t *testing.T) {
 		func(_ context.Context, _ string) (string, error) { return "", nil },
 		func(_ context.Context, _, _ string) (string, error) { return "", nil },
 	)
-	mux := NewRouter(nil, nil, WithRuntime(runtimeFromCoordinator(coord)))
+	mux := NewRouter(nil, nil, WithRuntime(RuntimeFuncFromCoordinator(coord)))
 
 	rec := doJSONRequest(t, mux, http.MethodPost, "/v1/runtime/chat",
 		`{"text":"`+text+`","scope_id":"scope-1"}`)
@@ -64,7 +64,7 @@ func TestRuntimeHTTPFailsClosedOnLLMError(t *testing.T) {
 		},
 		func(_ context.Context, _, _ string) (string, error) { return "", nil },
 	)
-	mux := NewRouter(nil, nil, WithRuntime(runtimeFromCoordinator(coord)))
+	mux := NewRouter(nil, nil, WithRuntime(RuntimeFuncFromCoordinator(coord)))
 
 	rec := doJSONRequest(t, mux, http.MethodPost, "/v1/runtime/chat",
 		`{"text":"`+text+`","scope_id":"scope-1"}`)
@@ -90,7 +90,7 @@ func TestRuntimeHTTPFailsClosedOnRestoreError(t *testing.T) {
 			return "", errors.New("sensitive detokenization detail")
 		},
 	)
-	mux := NewRouter(nil, nil, WithRuntime(runtimeFromCoordinator(coord)))
+	mux := NewRouter(nil, nil, WithRuntime(RuntimeFuncFromCoordinator(coord)))
 
 	rec := doJSONRequest(t, mux, http.MethodPost, "/v1/runtime/chat",
 		`{"text":"`+text+`","scope_id":"scope-1"}`)
@@ -116,7 +116,7 @@ func TestRuntimeHTTPVaultSaveFailsClosedEndToEnd(t *testing.T) {
 	coord := pipe.RuntimeCoordinator(func(_ context.Context, _ string) (string, error) {
 		return "", errors.New("llm must not be reached")
 	})
-	mux := NewRouter(nil, nil, WithRuntime(runtimeFromCoordinator(coord)))
+	mux := NewRouter(nil, nil, WithRuntime(RuntimeFuncFromCoordinator(coord)))
 
 	rec := doJSONRequest(t, mux, http.MethodPost, "/v1/runtime/chat",
 		`{"text":"`+syntheticText+`","scope_id":"scope-1"}`)
@@ -138,7 +138,7 @@ func TestRuntimeHTTPInvalidContractRejected(t *testing.T) {
 		func(_ context.Context, _ string) (string, error) { return "", nil },
 		func(_ context.Context, _, _ string) (string, error) { return "", nil },
 	)
-	mux := NewRouter(nil, nil, WithRuntime(runtimeFromCoordinator(coord)))
+	mux := NewRouter(nil, nil, WithRuntime(RuntimeFuncFromCoordinator(coord)))
 
 	cases := []struct {
 		name string

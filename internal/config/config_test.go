@@ -17,6 +17,10 @@ func resetEnv(t *testing.T) {
 		EnvModelMode,
 		EnvVaultKey,
 		EnvModelClientTimeout,
+		EnvLLMURL,
+		EnvLLMModel,
+		EnvLLMAPIKey,
+		EnvLLMTimeout,
 	} {
 		value, present := os.LookupEnv(name)
 		if err := os.Unsetenv(name); err != nil {
@@ -226,5 +230,154 @@ func TestMalformedKeyErrorDoesNotLeakValue(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), raw) {
 		t.Fatalf("error leaks raw key value: %q", err.Error())
+	}
+}
+
+func TestLoadLLMDisabledByDefault(t *testing.T) {
+	resetEnv(t)
+	t.Setenv(EnvVaultKey, validKey(t))
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.LLM.Enabled() {
+		t.Error("LLM enabled by default, want disabled")
+	}
+	if cfg.LLM.Timeout != DefaultLLMTimeout {
+		t.Errorf("LLM.Timeout = %v, want %v", cfg.LLM.Timeout, DefaultLLMTimeout)
+	}
+}
+
+func TestLoadLLMCompleteGroup(t *testing.T) {
+	resetEnv(t)
+	t.Setenv(EnvVaultKey, validKey(t))
+	t.Setenv(EnvLLMURL, "https://llm.example.com/v1/chat/completions")
+	t.Setenv(EnvLLMModel, "test-model")
+	t.Setenv(EnvLLMAPIKey, "secret-key")
+	t.Setenv(EnvLLMTimeout, "45s")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.LLM.Enabled() {
+		t.Error("LLM not enabled, want enabled")
+	}
+	if cfg.LLM.URL != "https://llm.example.com/v1/chat/completions" {
+		t.Errorf("LLM.URL = %q", cfg.LLM.URL)
+	}
+	if cfg.LLM.Model != "test-model" {
+		t.Errorf("LLM.Model = %q", cfg.LLM.Model)
+	}
+	if cfg.LLM.APIKey != "secret-key" {
+		t.Errorf("LLM.APIKey = %q", cfg.LLM.APIKey)
+	}
+	if cfg.LLM.Timeout != 45*time.Second {
+		t.Errorf("LLM.Timeout = %v", cfg.LLM.Timeout)
+	}
+}
+
+func TestLoadLLMPartialGroupRejected(t *testing.T) {
+	cases := []struct {
+		name string
+		url  string
+		mod  string
+	}{
+		{"url only", "https://llm.example.com/v1/chat/completions", ""},
+		{"model only", "", "test-model"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetEnv(t)
+			t.Setenv(EnvVaultKey, validKey(t))
+			if tc.url != "" {
+				t.Setenv(EnvLLMURL, tc.url)
+			}
+			if tc.mod != "" {
+				t.Setenv(EnvLLMModel, tc.mod)
+			}
+			if _, err := Load(); err == nil {
+				t.Fatal("Load() expected error for partial LLM group")
+			}
+		})
+	}
+}
+
+// TestLoadLLMAPIKeyWithoutGroupRejected proves that a non-empty API key with
+// both URL and model absent is rejected as partial configuration instead of
+// being silently ignored, and that the error does not echo the key value.
+func TestLoadLLMAPIKeyWithoutGroupRejected(t *testing.T) {
+	resetEnv(t)
+	t.Setenv(EnvVaultKey, validKey(t))
+	t.Setenv(EnvLLMAPIKey, "secret-key")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() expected error for API key without URL+model group")
+	}
+	if strings.Contains(err.Error(), "secret-key") {
+		t.Fatalf("error echoes API key value: %q", err.Error())
+	}
+}
+
+func TestLoadLLMNonHTTPURL(t *testing.T) {
+	resetEnv(t)
+	t.Setenv(EnvVaultKey, validKey(t))
+	t.Setenv(EnvLLMURL, "ftp://example.com")
+	t.Setenv(EnvLLMModel, "test-model")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() expected error for non-http LLM URL")
+	}
+}
+
+func TestLoadLLMMalformedURL(t *testing.T) {
+	resetEnv(t)
+	t.Setenv(EnvVaultKey, validKey(t))
+	t.Setenv(EnvLLMURL, "not a url")
+	t.Setenv(EnvLLMModel, "test-model")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() expected error for malformed LLM URL")
+	}
+}
+
+func TestLoadLLMUserinfoURL(t *testing.T) {
+	resetEnv(t)
+	t.Setenv(EnvVaultKey, validKey(t))
+	t.Setenv(EnvLLMURL, "https://user:secret@llm.example.com/v1/chat/completions")
+	t.Setenv(EnvLLMModel, "test-model")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() expected error for LLM URL with userinfo")
+	}
+	if strings.Contains(err.Error(), "secret") {
+		t.Fatalf("error echoes credentials: %q", err.Error())
+	}
+}
+
+func TestLoadLLMInvalidTimeout(t *testing.T) {
+	resetEnv(t)
+	t.Setenv(EnvVaultKey, validKey(t))
+	t.Setenv(EnvLLMURL, "https://llm.example.com/v1/chat/completions")
+	t.Setenv(EnvLLMModel, "test-model")
+	t.Setenv(EnvLLMTimeout, "not-a-duration")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() expected error for invalid LLM timeout")
+	}
+}
+
+func TestLoadLLMNonPositiveTimeout(t *testing.T) {
+	resetEnv(t)
+	t.Setenv(EnvVaultKey, validKey(t))
+	t.Setenv(EnvLLMURL, "https://llm.example.com/v1/chat/completions")
+	t.Setenv(EnvLLMModel, "test-model")
+	t.Setenv(EnvLLMTimeout, "0s")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() expected error for non-positive LLM timeout")
 	}
 }

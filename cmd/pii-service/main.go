@@ -5,9 +5,10 @@
 // model-worker client, the /process benchmark adapter, metrics and audit
 // logging, and serves the HTTP API until SIGTERM or SIGINT.
 //
-// The /v1/runtime/chat route is registered but fails closed with 503 because
-// no real LLM client is configured yet; a vendor-specific LLM SDK or a
-// passthrough fake is intentionally not invented here.
+// The /v1/runtime/chat route runs the full product flow request -> mask ->
+// downstream LLM -> demask -> response when the downstream LLM is configured.
+// When the LLM configuration group is absent the route stays fail-closed with
+// 503 so /process can run alone.
 package main
 
 import (
@@ -24,6 +25,7 @@ import (
 	"github.com/klrushka/llm-proxy/internal/audit"
 	"github.com/klrushka/llm-proxy/internal/config"
 	"github.com/klrushka/llm-proxy/internal/detection"
+	"github.com/klrushka/llm-proxy/internal/llmclient"
 	"github.com/klrushka/llm-proxy/internal/metrics"
 	"github.com/klrushka/llm-proxy/internal/modelclient"
 	"github.com/klrushka/llm-proxy/internal/policy"
@@ -104,16 +106,10 @@ func run() error {
 	regMetrics := metrics.NewRegistry(metricsWindow)
 	logger := audit.New(os.Stderr)
 
-	// The runtime route is registered but left failing closed with 503 because
-	// no real LLM client is configured. WithRuntime is intentionally not wired.
-	mux := api.NewRouter(
-		func() error { return nil },
-		nil,
-		api.WithPIIHandlers(handlers),
-		api.WithProcess(op.Handle),
-		api.WithMetrics(regMetrics),
-		api.WithProcessAudit(logger),
-	)
+	mux, err := buildRouter(cfg, pipe, handlers, op, regMetrics, logger)
+	if err != nil {
+		return err
+	}
 
 	srv := &http.Server{
 		Addr:              cfg.APIListenAddress,
@@ -146,6 +142,38 @@ func run() error {
 		}
 		return nil
 	}
+}
+
+// buildRouter wires the HTTP router. The runtime route runs the full product
+// flow when the downstream LLM is configured; when the LLM configuration group
+// is absent the route stays fail-closed with 503 so /process can run alone.
+// WithRuntime is appended only when the group is complete: a nil option would
+// panic in NewRouter, which calls every option unconditionally.
+func buildRouter(cfg config.Config, pipe *api.Pipeline, handlers api.PIIHandlers, op *process.Operation, regMetrics *metrics.Registry, logger *audit.Logger) (*http.ServeMux, error) {
+	opts := []api.Option{
+		api.WithPIIHandlers(handlers),
+		api.WithProcess(op.Handle),
+		api.WithMetrics(regMetrics),
+		api.WithProcessAudit(logger),
+	}
+	if cfg.LLM.Enabled() {
+		llm, err := llmclient.New(llmclient.Config{
+			URL:     cfg.LLM.URL,
+			Model:   cfg.LLM.Model,
+			APIKey:  cfg.LLM.APIKey,
+			Timeout: cfg.LLM.Timeout,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("llm client: %w", err)
+		}
+		coord := pipe.RuntimeCoordinator(llm.Complete)
+		opts = append(opts, api.WithRuntime(api.RuntimeFuncFromCoordinator(coord)))
+	}
+	return api.NewRouter(
+		func() error { return nil },
+		nil,
+		opts...,
+	), nil
 }
 
 // modelDetector adapts the model-worker client to the pipeline's model

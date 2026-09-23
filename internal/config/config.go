@@ -19,6 +19,10 @@ const (
 	EnvModelMode          = EnvPrefix + "MODEL_MODE"
 	EnvVaultKey           = EnvPrefix + "VAULT_KEY"
 	EnvModelClientTimeout = EnvPrefix + "MODEL_CLIENT_TIMEOUT"
+	EnvLLMURL             = EnvPrefix + "LLM_URL"
+	EnvLLMModel           = EnvPrefix + "LLM_MODEL"
+	EnvLLMAPIKey          = EnvPrefix + "LLM_API_KEY"
+	EnvLLMTimeout         = EnvPrefix + "LLM_TIMEOUT"
 )
 
 // Defaults.
@@ -28,6 +32,7 @@ const (
 	DefaultVaultTTL           = 15 * time.Minute
 	DefaultModelMode          = ModelModeFull
 	DefaultModelClientTimeout = 30 * time.Second
+	DefaultLLMTimeout         = 60 * time.Second
 )
 
 // Model modes.
@@ -44,6 +49,23 @@ type Config struct {
 	ModelMode          string
 	VaultKey           VaultKey
 	ModelClientTimeout time.Duration
+	LLM                LLMConfig
+}
+
+// LLMConfig holds the optional downstream LLM configuration. It is optional as
+// a complete group: when both URL and model are absent the runtime route stays
+// fail-closed 503. Any partial configuration is a startup validation error.
+type LLMConfig struct {
+	URL     string
+	Model   string
+	APIKey  string
+	Timeout time.Duration
+}
+
+// Enabled reports whether the LLM group is fully configured. It is true only
+// when both URL and model are present.
+func (l LLMConfig) Enabled() bool {
+	return l.URL != "" && l.Model != ""
 }
 
 // VaultKey holds the decoded vault encryption key. Its bytes are never
@@ -65,6 +87,9 @@ func Load() (Config, error) {
 		VaultTTL:           DefaultVaultTTL,
 		ModelMode:          DefaultModelMode,
 		ModelClientTimeout: DefaultModelClientTimeout,
+		LLM: LLMConfig{
+			Timeout: DefaultLLMTimeout,
+		},
 	}
 
 	if v, ok := os.LookupEnv(EnvAPIListenAddress); ok {
@@ -89,6 +114,23 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("%s: invalid duration: %w", EnvModelClientTimeout, err)
 		}
 		cfg.ModelClientTimeout = d
+	}
+
+	if v, ok := os.LookupEnv(EnvLLMURL); ok {
+		cfg.LLM.URL = v
+	}
+	if v, ok := os.LookupEnv(EnvLLMModel); ok {
+		cfg.LLM.Model = v
+	}
+	if v, ok := os.LookupEnv(EnvLLMAPIKey); ok {
+		cfg.LLM.APIKey = v
+	}
+	if v, ok := os.LookupEnv(EnvLLMTimeout); ok {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return Config{}, fmt.Errorf("%s: invalid duration: %w", EnvLLMTimeout, err)
+		}
+		cfg.LLM.Timeout = d
 	}
 
 	rawKey, ok := os.LookupEnv(EnvVaultKey)
@@ -135,6 +177,52 @@ func (c Config) validate() error {
 	}
 	if c.ModelClientTimeout <= 0 {
 		return fmt.Errorf("%s: must be greater than zero", EnvModelClientTimeout)
+	}
+	if err := c.validateLLM(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateLLM validates the optional downstream LLM group. The group is
+// optional as a whole: when both URL and model are absent it is disabled and
+// the runtime route stays fail-closed 503. Any partial configuration is a
+// startup validation error, including an API key set without the URL+model
+// group.
+func (c Config) validateLLM() error {
+	urlSet := c.LLM.URL != ""
+	modelSet := c.LLM.Model != ""
+	if urlSet != modelSet {
+		return fmt.Errorf("%s and %s must be set together", EnvLLMURL, EnvLLMModel)
+	}
+	if !urlSet {
+		if c.LLM.APIKey != "" {
+			return fmt.Errorf("%s requires %s and %s", EnvLLMAPIKey, EnvLLMURL, EnvLLMModel)
+		}
+		return nil
+	}
+	if err := validateLLMURL(c.LLM.URL); err != nil {
+		return err
+	}
+	if c.LLM.Timeout <= 0 {
+		return fmt.Errorf("%s: must be greater than zero", EnvLLMTimeout)
+	}
+	return nil
+}
+
+func validateLLMURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("%s: invalid URL", EnvLLMURL)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("%s: scheme must be http or https", EnvLLMURL)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("%s: host is required", EnvLLMURL)
+	}
+	if u.User != nil {
+		return fmt.Errorf("%s: userinfo is not allowed", EnvLLMURL)
 	}
 	return nil
 }
