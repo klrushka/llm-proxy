@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/klrushka/llm-proxy/internal/api"
 	"github.com/klrushka/llm-proxy/internal/detection"
@@ -49,6 +50,39 @@ func TestHybridFallbackMasksAndRestoresInSameScope(t *testing.T) {
 	}
 }
 
+func TestHybridPrimaryBudgetLeavesTimeForRulesFallback(t *testing.T) {
+	const text = "Клиент, email budget@example.com"
+	pipe := newPipelineWithModel(t, func(ctx context.Context, _ string) ([]detection.Candidate, error) {
+		<-ctx.Done()
+		return nil, api.ErrModelUnavailable
+	}, string(detection.TypeEmail))
+	mask := hybridProcessMaskWithBudget(pipe, nil, 20*time.Millisecond)
+	parent, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	result, err := mask(parent, text)
+	if err != nil || result == "" || result == text || parent.Err() != nil {
+		t.Fatalf("primary timeout did not leave live fallback budget: err=%v masked=%t parent=%v", err, result != "" && result != text, parent.Err())
+	}
+	restored, err := pipe.Handlers().Detokenize(context.Background(), api.DetokenizeRequest{Text: result, ScopeID: processScope, Mode: api.ModeStrict})
+	if err != nil || restored.RestoredText != text {
+		t.Fatalf("budget fallback restore failed: %v", err)
+	}
+}
+
+func TestHybridCanceledParentDoesNotRunRulesFallback(t *testing.T) {
+	pipe := newPipelineWithModel(t, func(context.Context, string) ([]detection.Candidate, error) {
+		return nil, api.ErrModelUnavailable
+	}, string(detection.TypeEmail))
+	called := false
+	mask := hybridProcessMaskWithBudget(pipe, func(string) { called = true }, 20*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result, err := mask(ctx, "email cancel@example.com")
+	if !errors.Is(err, process.ErrModelUnavailable) || result != "" || called {
+		t.Fatalf("canceled parent fell back or became terminal: err=%v result_empty=%t fallback=%t", err, result == "", called)
+	}
+}
+
 func TestHybridFallbackPreservesReviewAndGenericFailure(t *testing.T) {
 	const ambiguous = "родился 01.02.1990"
 	pipe := newPipelineWithModel(t, func(context.Context, string) ([]detection.Candidate, error) {
@@ -59,11 +93,11 @@ func TestHybridFallbackPreservesReviewAndGenericFailure(t *testing.T) {
 	req := process.Request{Payload: ambiguous, PayloadID: "synthetic-review-id"}
 	for i := 0; i < 2; i++ {
 		resp, err := op.Handle(context.Background(), req)
-		if !errors.Is(err, process.ErrReviewRequired) || resp.Result != "" {
-			t.Fatalf("review attempt %d: err=%v result_empty=%t", i, err, resp.Result == "")
+		if err != nil || resp.Result == "" || strings.Contains(resp.Result, "01.02.1990") {
+			t.Fatalf("review mask attempt %d failed: err=%v", i, err)
 		}
 	}
-	if len(outcomes) != 1 || outcomes[0] != "review" {
+	if len(outcomes) != 1 || outcomes[0] != "success" {
 		t.Fatalf("review fallback outcomes = %v", outcomes)
 	}
 	generic := newPipelineWithModel(t, func(context.Context, string) ([]detection.Candidate, error) {

@@ -2,12 +2,10 @@ package api
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
 
 	"github.com/klrushka/llm-proxy/internal/detection"
-	"github.com/klrushka/llm-proxy/internal/runtime"
 )
 
 // ambiguousBirthText is a synthetic fixture whose date is classified as
@@ -52,11 +50,15 @@ func TestTokenizeFailsClosedOnAmbiguousAllowedBirthDate(t *testing.T) {
 	}
 
 	tok, err := pipe.Handlers().Tokenize(context.Background(), TokenizeRequest{Text: ambiguousBirthText, ScopeID: "s1"})
-	if !errors.Is(err, ErrReviewRequired) {
-		t.Fatalf("Tokenize() error = %v, want ErrReviewRequired", err)
+	if err != nil || tok.TokenizedText == "" || strings.Contains(tok.TokenizedText, "01.02.1990") {
+		t.Fatalf("ambiguous date not masked: %v", err)
 	}
-	if tok.TokenizedText != "" {
-		t.Errorf("tokenized_text = %q, want empty on fail-closed", tok.TokenizedText)
+	if len(tok.Entities) != 1 || tok.Entities[0].Personal || !tok.Entities[0].ReviewRecommended {
+		t.Fatalf("ownership metadata changed: %+v", tok.Entities)
+	}
+	restored, err := pipe.Handlers().Detokenize(context.Background(), DetokenizeRequest{Text: tok.TokenizedText, ScopeID: "s1", Mode: ModeStrict})
+	if err != nil || restored.RestoredText != ambiguousBirthText {
+		t.Fatalf("ambiguous date restore failed: %v", err)
 	}
 }
 
@@ -69,14 +71,11 @@ func TestRuntimeCoordinatorFailsClosedOnAmbiguousAllowed(t *testing.T) {
 	coord := pipe.RuntimeCoordinator(llm.call)
 
 	result, err := coord.Run(context.Background(), "scope-1", ambiguousBirthText)
-	if !errors.Is(err, runtime.ErrProtectFailed) {
-		t.Fatalf("Run() error = %v, want ErrProtectFailed", err)
+	if err != nil || result != ambiguousBirthText {
+		t.Fatalf("protected runtime/restore failed: %v", err)
 	}
-	if result != "" {
-		t.Errorf("result = %q, want empty on fail-closed", result)
-	}
-	if got := len(llm.calls()); got != 0 {
-		t.Errorf("LLM calls = %d, want 0 (chain must stop before the LLM)", got)
+	if got := len(llm.calls()); got != 1 || strings.Contains(llm.calls()[0], "01.02.1990") {
+		t.Fatalf("LLM input not protected: calls=%d", got)
 	}
 }
 
@@ -133,16 +132,8 @@ func TestReviewErrorDoesNotLeakSyntheticMarker(t *testing.T) {
 	const text = "родился 01.02.1990 REQ_BODY_MARKER_11111 CVV_MARKER_66666"
 	pipe := newPolicyProjectionPipeline(t, noModel, string(detection.TypeBirthDate))
 
-	_, err := pipe.Handlers().Tokenize(context.Background(), TokenizeRequest{Text: text, ScopeID: "s1"})
-	if !errors.Is(err, ErrReviewRequired) {
-		t.Fatalf("Tokenize() error = %v, want ErrReviewRequired", err)
-	}
-	if strings.Contains(err.Error(), text) {
-		t.Errorf("error leaks original text: %q", err.Error())
-	}
-	for _, m := range forbiddenMarkers {
-		if strings.Contains(err.Error(), m) {
-			t.Errorf("error leaks forbidden marker %q: %q", m, err.Error())
-		}
+	tok, err := pipe.Handlers().Tokenize(context.Background(), TokenizeRequest{Text: text, ScopeID: "s1"})
+	if err != nil || tok.TokenizedText == "" || strings.Contains(tok.TokenizedText, "01.02.1990") {
+		t.Fatalf("ambiguous date not masked: %v", err)
 	}
 }

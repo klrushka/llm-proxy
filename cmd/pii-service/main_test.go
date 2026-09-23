@@ -26,7 +26,6 @@ import (
 	"github.com/klrushka/llm-proxy/internal/modelclient"
 	"github.com/klrushka/llm-proxy/internal/policy"
 	"github.com/klrushka/llm-proxy/internal/process"
-	"github.com/klrushka/llm-proxy/internal/runtime"
 	"github.com/klrushka/llm-proxy/internal/tokenization"
 	"github.com/klrushka/llm-proxy/internal/vault"
 )
@@ -713,14 +712,8 @@ func TestRuntimePolicyProjection(t *testing.T) {
 		})
 
 		got, err := coord.Run(context.Background(), "scope-city", text)
-		if !errors.Is(err, runtime.ErrProtectFailed) {
-			t.Fatalf("Run() error = %v, want ErrProtectFailed", err)
-		}
-		if got != "" {
-			t.Errorf("Run() result = %q, want empty on fail-closed", got)
-		}
-		if llmCalls != 0 {
-			t.Fatalf("llm calls = %d, want 0 (chain must stop before the LLM)", llmCalls)
+		if err != nil || got != text || llmCalls != 1 {
+			t.Fatalf("protected ambiguous CITY runtime failed: err=%v calls=%d", err, llmCalls)
 		}
 	})
 

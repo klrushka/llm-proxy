@@ -448,6 +448,16 @@ func processMask(handlers api.PIIHandlers) process.MaskFunc {
 }
 
 func hybridProcessMask(pipe *api.Pipeline, record func(string)) process.MaskFunc {
+	return hybridProcessMaskWithBudget(pipe, record, 900*time.Millisecond)
+}
+
+func hybridProcessMaskWithBudget(pipe *api.Pipeline, record func(string), budget time.Duration) process.MaskFunc {
+	primary := processMask(pipe.Handlers())
+	boundedPrimary := func(ctx context.Context, payload string) (string, error) {
+		attempt, cancel := context.WithTimeout(ctx, budget)
+		defer cancel()
+		return primary(attempt, payload)
+	}
 	rulesOnly := processMaskTokenize(pipe.TokenizeRulesOnly)
 	fallback := func(ctx context.Context, payload string) (string, error) {
 		result, err := rulesOnly(ctx, payload)
@@ -462,7 +472,7 @@ func hybridProcessMask(pipe *api.Pipeline, record func(string)) process.MaskFunc
 		}
 		return result, err
 	}
-	return process.WithRulesOnlyFallback(true, processMask(pipe.Handlers()), fallback)
+	return process.WithRulesOnlyFallback(true, boundedPrimary, fallback)
 }
 
 func processMaskTokenize(tokenize api.TokenizeFunc) process.MaskFunc {

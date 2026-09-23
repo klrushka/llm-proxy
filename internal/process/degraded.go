@@ -46,6 +46,9 @@ func WithRulesOnlyFallback(allowRulesOnlyDegraded bool, primary, rulesOnly MaskF
 		}
 
 		if errors.Is(err, ErrModelUnavailable) {
+			if ctx.Err() != nil {
+				return "", ErrModelUnavailable
+			}
 			if allowRulesOnlyDegraded && rulesOnly != nil {
 				// Invoke rulesOnly exactly once. Its result is returned only on
 				// success; on failure any non-empty result is discarded and the

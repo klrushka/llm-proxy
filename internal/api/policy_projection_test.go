@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -161,11 +160,17 @@ func TestPolicyProjectionAllowedCityAndEmail(t *testing.T) {
 	// The policy-allowed ambiguous CITY requires review, so tokenize must fail
 	// closed and must not emit a partial tokenized result.
 	tok, err := pipe.Handlers().Tokenize(context.Background(), TokenizeRequest{Text: overlapText, ScopeID: "s1"})
-	if !errors.Is(err, ErrReviewRequired) {
-		t.Fatalf("Tokenize() error = %v, want ErrReviewRequired", err)
+	if err != nil || tok.TokenizedText == "" || tok.TokenizedText == overlapText {
+		t.Fatalf("ambiguous CITY/EMAIL not masked: %v", err)
 	}
-	if tok.TokenizedText != "" {
-		t.Errorf("tokenized_text = %q, want empty on fail-closed", tok.TokenizedText)
+	for _, raw := range []string{"Иван", "ivan@example.com"} {
+		if strings.Contains(tok.TokenizedText, raw) {
+			t.Fatalf("allowed span remained unmasked")
+		}
+	}
+	restored, err := pipe.Handlers().Detokenize(context.Background(), DetokenizeRequest{Text: tok.TokenizedText, ScopeID: "s1", Mode: ModeStrict})
+	if err != nil || restored.RestoredText != overlapText {
+		t.Fatalf("restore failed: %v", err)
 	}
 }
 

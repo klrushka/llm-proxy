@@ -288,13 +288,14 @@ func (p *Pipeline) tokenizeWithModel(ctx context.Context, req TokenizeRequest, m
 	if err != nil {
 		return TokenizeResponse{}, err
 	}
-	// Fail closed on any policy-allowed ambiguous entity that requires review:
-	// it must never be sent to the LLM as plaintext or as a partial tokenized
-	// result. A reporting-only entity disabled by policy (type_disabled_by_policy)
-	// is explicitly excluded by the consumer and must not block tokenization.
-	for _, r := range results {
+	// Explicit conservative processing policy: ambiguous allowed spans are
+	// tokenized without declaring them personal in response metadata. Keep the
+	// ownership results intact for reporting; only the replacement input marks
+	// those spans for masking. Disabled policy types remain reporting-only.
+	maskResults := append([]ownership.Entity(nil), results...)
+	for i, r := range results {
 		if r.ReviewRecommended && !hasReason(r.ReasonCodes, ownership.ReasonTypeDisabledByPolicy) {
-			return TokenizeResponse{}, ErrReviewRequired
+			maskResults[i].Personal = true
 		}
 	}
 	// Hold the lifecycle read lock across the whole issuance and persistence
@@ -306,7 +307,7 @@ func (p *Pipeline) tokenizeWithModel(ctx context.Context, req TokenizeRequest, m
 		p.lifecycle.RUnlock()
 		return TokenizeResponse{}, err
 	}
-	res, err := tokenization.ReplaceAndPersist(ctx, req.Text, req.ScopeID, results, p.issuer, p.vault)
+	res, err := tokenization.ReplaceAndPersist(ctx, req.Text, req.ScopeID, maskResults, p.issuer, p.vault)
 	p.lifecycle.RUnlock()
 	if err != nil {
 		return TokenizeResponse{}, err
