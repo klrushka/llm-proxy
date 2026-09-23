@@ -192,7 +192,7 @@ func TestInstrumentTransportClassifiesTimeout(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for !strings.Contains(scrape(t, m), want) {
 		if time.Now().After(deadline) {
-			t.Fatalf("metrics body missing %q", want)
+			t.Fatalf("metrics body missing %q; got:\n%s", want, grepLines(scrape(t, m), "http_client_request_duration_seconds_count"))
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -278,4 +278,15 @@ func TestRegisterVaultMappings(t *testing.T) {
 	}
 	var nilMetrics *Metrics
 	nilMetrics.RegisterVaultMappings(func() int { return 1 })
+}
+
+// grepLines returns the lines of s that start with prefix.
+func grepLines(s, prefix string) string {
+	var out []string
+	for _, l := range strings.Split(s, "\n") {
+		if strings.HasPrefix(l, prefix) {
+			out = append(out, l)
+		}
+	}
+	return strings.Join(out, "\n")
 }

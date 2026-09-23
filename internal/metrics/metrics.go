@@ -260,18 +260,26 @@ type roundTripperFunc func(*http.Request) (*http.Response, error)
 func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 // transportErrorType classifies a transport error into a fixed label value.
-// It never uses the error text.
+// It never uses the error text. http.Client.Timeout may cancel the request
+// just before its context reports DeadlineExceeded, so a reached context
+// deadline also counts as a timeout.
 func transportErrorType(ctx context.Context, err error) string {
 	var netErr net.Error
 	switch {
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(ctx.Err(), context.DeadlineExceeded),
-		errors.As(err, &netErr) && netErr.Timeout():
+		errors.As(err, &netErr) && netErr.Timeout(), deadlineReached(ctx):
 		return "timeout"
 	case errors.Is(err, context.Canceled), errors.Is(ctx.Err(), context.Canceled):
 		return "canceled"
 	default:
 		return "transport"
 	}
+}
+
+// deadlineReached reports whether ctx has a deadline that is not in the future.
+func deadlineReached(ctx context.Context) bool {
+	dl, ok := ctx.Deadline()
+	return ok && !time.Now().Before(dl)
 }
 
 // Handler returns the http.Handler for GET /metrics. A nil *Metrics serves a
