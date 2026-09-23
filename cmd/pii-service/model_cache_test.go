@@ -13,7 +13,10 @@ import (
 	"time"
 
 	"github.com/klrushka/llm-proxy/internal/api"
+	"github.com/klrushka/llm-proxy/internal/config"
 	"github.com/klrushka/llm-proxy/internal/detection"
+	"github.com/klrushka/llm-proxy/internal/modelclient"
+	"github.com/klrushka/llm-proxy/internal/process"
 )
 
 func newSyntheticNERCache(t *testing.T) *nerCache {
@@ -99,6 +102,109 @@ func TestNERCacheDoesNotRetainErrorOrCanceledWaiter(t *testing.T) {
 	<-ownerDone
 }
 
+func waitForNERFlight(t *testing.T, c *nerCache, text string, waiters int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		c.mu.Lock()
+		f := c.flights[c.digest(text)]
+		ready := f != nil && f.waiters == waiters
+		c.mu.Unlock()
+		if ready {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("NER flight did not reach %d subscribers", waiters)
+}
+
+func TestNERCacheOwnerCancelKeepsLiveWaiter(t *testing.T) {
+	c := newSyntheticNERCache(t)
+	const text = "synthetic owner cancellation"
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var calls atomic.Int32
+	compute := func(ctx context.Context, _ string) ([]detection.Candidate, error) {
+		calls.Add(1)
+		close(entered)
+		select {
+		case <-release:
+			return []detection.Candidate{{Type: detection.TypeEmail}}, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	ownerCtx, cancel := context.WithCancel(context.Background())
+	ownerErr := make(chan error, 1)
+	go func() { _, err := c.detect(ownerCtx, text, compute, nil); ownerErr <- err }()
+	<-entered
+	waiter := make(chan error, 1)
+	go func() {
+		spans, err := c.detect(context.Background(), text, compute, nil)
+		if err == nil && len(spans) != 1 {
+			err = fmt.Errorf("live waiter got %d spans", len(spans))
+		}
+		waiter <- err
+	}()
+	waitForNERFlight(t, c, text, 2)
+	cancel()
+	if err := <-ownerErr; !errors.Is(err, context.Canceled) {
+		t.Fatalf("owner error = %v", err)
+	}
+	close(release)
+	if err := <-waiter; err != nil {
+		t.Fatalf("live waiter error = %v", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("NER calls = %d, want one", calls.Load())
+	}
+}
+
+func TestNERCacheCancelsWorkWhenAllSubscribersLeave(t *testing.T) {
+	c := newSyntheticNERCache(t)
+	const text = "synthetic all cancel"
+	entered := make(chan struct{})
+	stopped := make(chan struct{})
+	compute := func(ctx context.Context, _ string) ([]detection.Candidate, error) {
+		close(entered)
+		<-ctx.Done()
+		close(stopped)
+		return nil, ctx.Err()
+	}
+	ownerCtx, cancelOwner := context.WithCancel(context.Background())
+	ownerDone := make(chan error, 1)
+	go func() { _, err := c.detect(ownerCtx, text, compute, nil); ownerDone <- err }()
+	<-entered
+	waiterCtx, cancelWaiter := context.WithCancel(context.Background())
+	waiterDone := make(chan error, 1)
+	go func() { _, err := c.detect(waiterCtx, text, compute, nil); waiterDone <- err }()
+	waitForNERFlight(t, c, text, 2)
+	cancelOwner()
+	if err := <-ownerDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("owner error = %v", err)
+	}
+	cancelWaiter()
+	if err := <-waiterDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("waiter error = %v", err)
+	}
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("shared work was not canceled")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		c.mu.Lock()
+		remaining := len(c.flights)
+		c.mu.Unlock()
+		if remaining == 0 {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("canceled flight was retained")
+}
+
 func TestNERCacheTTLAndEntryLimit(t *testing.T) {
 	c := newSyntheticNERCache(t)
 	now := time.Now()
@@ -156,5 +262,75 @@ func TestCachedNERStillTokenizesAndRestoresPerScope(t *testing.T) {
 		if err != nil || got.RestoredText != text {
 			t.Fatalf("restore for %s failed: %v", tc.scope, err)
 		}
+	}
+}
+
+func TestCoalescedWorkerTimeoutIsRetryableProcess503(t *testing.T) {
+	var phase atomic.Int32
+	entered := make(chan struct{})
+	var once sync.Once
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if phase.Load() == 0 {
+			once.Do(func() { close(entered) })
+			select {
+			case <-r.Context().Done():
+			case <-time.After(700 * time.Millisecond):
+			}
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		planAware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			fmt.Fprint(w, responseJSON())
+		})).ServeHTTP(w, r)
+	}))
+	defer worker.Close()
+	client, err := modelclient.New(worker.URL, modelclient.ModeFull, 500*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, err := detection.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcomes := make(chan string, 4)
+	pipe := newPipelineWithModel(t, modelDetectorWithCache(client, reg, func(s string) { outcomes <- s }), string(detection.TypeEmail))
+	handlers := pipe.Handlers()
+	op := process.NewOperation(process.NewStore(), processMask(handlers))
+	mux, err := buildRouter(config.Config{LLM: config.LLMConfig{Timeout: config.DefaultLLMTimeout}}, pipe, handlers, op, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	post := func(id string) int {
+		rec := httptest.NewRecorder()
+		body := fmt.Sprintf(`{"payload":"synthetic text","payload_id":%q}`, id)
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/process", strings.NewReader(body)))
+		return rec.Code
+	}
+	first := make(chan int, 1)
+	second := make(chan int, 1)
+	go func() { first <- post("synthetic-id-1") }()
+	<-entered
+	go func() { second <- post("synthetic-id-2") }()
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case outcome := <-outcomes:
+			if outcome == "coalesced" {
+				goto joined
+			}
+		case <-deadline:
+			t.Fatal("second process request did not coalesce")
+		}
+	}
+joined:
+	if got := <-first; got != http.StatusServiceUnavailable {
+		t.Fatalf("first /process status = %d, want 503", got)
+	}
+	if got := <-second; got != http.StatusServiceUnavailable {
+		t.Fatalf("coalesced /process status = %d, want 503", got)
+	}
+	phase.Store(1)
+	if got := post("synthetic-id-1"); got != http.StatusOK {
+		t.Fatalf("same-ID retry /process status = %d, want 200", got)
 	}
 }

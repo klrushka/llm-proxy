@@ -39,9 +39,12 @@ type nerCacheEntry struct {
 }
 
 type nerFlight struct {
-	done  chan struct{}
-	spans []detection.Candidate
-	err   error
+	done      chan struct{}
+	cancel    context.CancelFunc
+	waiters   int
+	abandoned bool
+	spans     []detection.Candidate
+	err       error
 }
 
 func newNERCache(domain string) (*nerCache, error) {
@@ -80,49 +83,88 @@ func spanBytes(in []detection.Candidate) int {
 }
 
 // detect coalesces identical in-flight NER while callers retain independent
-// cancellation. A canceled owner cancels its worker call; waiters receive the
-// safe failure and may retry. Only successful, still-live results enter the
+// cancellation. Shared work has its own bounded lifetime and is canceled when
+// its last subscriber leaves. Only successful, still-live results enter the
 // bounded cache. report receives a closed outcome name and no request data.
 func (c *nerCache) detect(ctx context.Context, text string, compute func(context.Context, string) ([]detection.Candidate, error), report func(string)) ([]detection.Candidate, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	key := c.digest(text)
-	c.mu.Lock()
-	if e, ok := c.entries[key]; ok {
-		if c.now().Before(e.expires) {
-			spans := cloneSpans(e.spans)
+	for {
+		c.mu.Lock()
+		if e, ok := c.entries[key]; ok {
+			if c.now().Before(e.expires) {
+				spans := cloneSpans(e.spans)
+				c.mu.Unlock()
+				if report != nil {
+					report("hit")
+				}
+				return spans, nil
+			}
+			delete(c.entries, key)
+			c.bytes -= e.size
+		}
+		if f := c.flights[key]; f != nil {
+			if f.abandoned {
+				c.mu.Unlock()
+				select {
+				case <-f.done:
+					continue
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+			f.waiters++
 			c.mu.Unlock()
 			if report != nil {
-				report("hit")
+				report("coalesced")
 			}
-			return spans, nil
+			return c.await(ctx, f)
 		}
-		delete(c.entries, key)
-		c.bytes -= e.size
-	}
-	if f := c.flights[key]; f != nil {
+		if len(c.flights) >= nerCacheMaxFlights {
+			c.mu.Unlock()
+			if report != nil {
+				report("uncached")
+			}
+			return compute(ctx, text)
+		}
+		workCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		f := &nerFlight{done: make(chan struct{}), cancel: cancel, waiters: 1}
+		c.flights[key] = f
 		c.mu.Unlock()
 		if report != nil {
-			report("coalesced")
+			report("miss")
 		}
+		go c.runFlight(workCtx, key, text, f, compute)
+		return c.await(ctx, f)
+	}
+}
+
+func (c *nerCache) await(ctx context.Context, f *nerFlight) ([]detection.Candidate, error) {
+	select {
+	case <-f.done:
+		return cloneSpans(f.spans), f.err
+	case <-ctx.Done():
+		c.mu.Lock()
 		select {
 		case <-f.done:
-			return cloneSpans(f.spans), f.err
-		case <-ctx.Done():
+			c.mu.Unlock()
 			return nil, ctx.Err()
+		default:
 		}
-	}
-	if len(c.flights) >= nerCacheMaxFlights {
+		f.waiters--
+		if f.waiters == 0 {
+			f.abandoned = true
+			f.cancel()
+		}
 		c.mu.Unlock()
-		if report != nil {
-			report("uncached")
-		}
-		return compute(ctx, text)
+		return nil, ctx.Err()
 	}
-	f := &nerFlight{done: make(chan struct{})}
-	c.flights[key] = f
-	c.mu.Unlock()
-	if report != nil {
-		report("miss")
-	}
+}
+
+func (c *nerCache) runFlight(ctx context.Context, key [32]byte, text string, f *nerFlight, compute func(context.Context, string) ([]detection.Candidate, error)) {
+	defer f.cancel()
 	spans, err := compute(ctx, text)
 	if err == nil && ctx.Err() != nil {
 		err = ctx.Err()
@@ -132,7 +174,7 @@ func (c *nerCache) detect(ctx context.Context, text string, compute func(context
 	}
 	c.mu.Lock()
 	delete(c.flights, key)
-	if err == nil {
+	if err == nil && !f.abandoned {
 		size := spanBytes(spans)
 		if size <= nerCacheMaxBytes {
 			for len(c.entries) >= nerCacheMaxEntries || c.bytes+size > nerCacheMaxBytes {
@@ -149,5 +191,4 @@ func (c *nerCache) detect(ctx context.Context, text string, compute func(context
 	f.spans, f.err = cloneSpans(spans), err
 	close(f.done)
 	c.mu.Unlock()
-	return spans, err
 }

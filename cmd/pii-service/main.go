@@ -135,20 +135,7 @@ func run() error {
 	// The /process masker is the real pipeline tokenize path. A model-worker
 	// unavailability is classified to the process-level sentinel so the
 	// operation fails closed with 503 instead of a generic 500.
-	mask := func(ctx context.Context, payload string) (string, error) {
-		res, err := handlers.Tokenize(ctx, api.TokenizeRequest{Text: payload, ScopeID: processScope})
-		if err != nil {
-			if errors.Is(err, modelclient.ErrModelUnavailable) {
-				return "", process.ErrModelUnavailable
-			}
-			if errors.Is(err, api.ErrReviewRequired) {
-				return "", process.ErrReviewRequired
-			}
-			return "", err
-		}
-		return res.TokenizedText, nil
-	}
-	op := process.NewOperation(process.NewStore(), mask)
+	op := process.NewOperation(process.NewStore(), processMask(handlers))
 
 	logger := audit.New(os.Stderr)
 
@@ -453,6 +440,22 @@ func buildRouter(cfg config.Config, pipe *api.Pipeline, handlers api.PIIHandlers
 // values are dropped rather than promoted.
 func modelDetector(client *modelclient.Client, reg *detection.Registry) api.ModelDetector {
 	return modelDetectorWithCache(client, reg, nil)
+}
+
+func processMask(handlers api.PIIHandlers) process.MaskFunc {
+	return func(ctx context.Context, payload string) (string, error) {
+		res, err := handlers.Tokenize(ctx, api.TokenizeRequest{Text: payload, ScopeID: processScope})
+		if err != nil {
+			if errors.Is(err, modelclient.ErrModelUnavailable) || errors.Is(err, api.ErrModelUnavailable) {
+				return "", process.ErrModelUnavailable
+			}
+			if errors.Is(err, api.ErrReviewRequired) {
+				return "", process.ErrReviewRequired
+			}
+			return "", err
+		}
+		return res.TokenizedText, nil
+	}
 }
 
 func modelDetectorWithCache(client *modelclient.Client, reg *detection.Registry, report func(string)) api.ModelDetector {
