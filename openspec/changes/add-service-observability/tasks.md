@@ -11,7 +11,7 @@
 
 - [x] 3.1 Инструментировать model client: `http_client_request_duration_seconds{server="model_worker"}` по операции и исходу; observable check: unit tests с тестовым сервером проходят.
 - [x] 3.2 Инструментировать LLM client: `http_client_request_duration_seconds{server="llm"}` по исходу; observable check: unit tests с тестовым сервером проходят.
-- [ ] 3.3 Добавить `pii_entities_detected_total{type}` и `pii_vault_mappings`; observable check: unit tests — метки только из canonical registry, значения сущностей в выводе отсутствуют.
+- [x] 3.3 Добавить `pii_entities_detected_total{type}` и `pii_vault_mappings`; observable check: unit tests — метки только из canonical registry, значения сущностей в выводе отсутствуют.
 
 ## 4. Эксплуатация
 

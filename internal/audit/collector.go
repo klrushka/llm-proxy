@@ -22,6 +22,7 @@ type Collector struct {
 	mu       sync.Mutex
 	entities []Entity
 	model    ModelMode
+	tokens   int
 }
 
 // NewCollector returns an empty request collector.
@@ -42,6 +43,21 @@ func (c *Collector) SetModelMode(m ModelMode) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.model = m
+}
+
+// AddInputTokens adds n to the number of input tokens submitted to detection
+// in this request. It is a safe numeric aggregate and never carries text.
+func (c *Collector) AddInputTokens(n int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.tokens += n
+}
+
+// InputTokens returns the number of input tokens submitted to detection.
+func (c *Collector) InputTokens() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.tokens
 }
 
 // Snapshot returns a defensive copy of the accumulated entities and the model

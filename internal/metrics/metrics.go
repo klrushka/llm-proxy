@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/klrushka/llm-proxy/internal/audit"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -25,6 +26,9 @@ type Options struct {
 	Version string
 	// ModelMode is the configured model mode (full or fast).
 	ModelMode string
+	// EntityTypes is the canonical PII type registry. Only these names are
+	// used as type label values; anything else is recorded as other.
+	EntityTypes []string
 }
 
 // Metrics owns a private Prometheus registry with the Go runtime and process
@@ -36,6 +40,9 @@ type Metrics struct {
 	serverActive   *prometheus.GaugeVec
 	serverBodySize *prometheus.HistogramVec
 	clientDuration *prometheus.HistogramVec
+	entities       *prometheus.CounterVec
+	inputTokens    prometheus.Counter
+	entityTypes    map[string]struct{}
 }
 
 // DurationBuckets are the OpenTelemetry-recommended HTTP duration buckets in
@@ -90,7 +97,20 @@ func New(opts Options) *Metrics {
 		Help:    "Duration of outbound HTTP requests to service dependencies.",
 		Buckets: DurationBuckets,
 	}, []string{"server", "operation", "http_request_method", "http_response_status_code", "error_type"})
-	reg.MustRegister(m.serverDuration, m.serverActive, m.serverBodySize, m.clientDuration)
+	m.entities = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pii_entities_detected_total",
+		Help: "Personal data entities confirmed by the detection pipeline, by canonical type.",
+	}, []string{"type"})
+	m.inputTokens = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "pii_input_tokens_total",
+		Help: "Whitespace-separated tokens submitted to the detection pipeline.",
+	})
+	m.entityTypes = make(map[string]struct{}, len(opts.EntityTypes))
+	for _, t := range opts.EntityTypes {
+		m.entityTypes[t] = struct{}{}
+		m.entities.WithLabelValues(t)
+	}
+	reg.MustRegister(m.serverDuration, m.serverActive, m.serverBodySize, m.clientDuration, m.entities, m.inputTokens)
 	return m
 }
 
@@ -113,10 +133,16 @@ func (m *Metrics) Middleware(route func(*http.Request) string) func(http.Handler
 			if r.ContentLength >= 0 {
 				m.serverBodySize.WithLabelValues(method, tmpl).Observe(float64(r.ContentLength))
 			}
+			col, ok := audit.CollectorFromContext(r.Context())
+			if !ok {
+				col = audit.NewCollector()
+				r = r.WithContext(audit.WithCollector(r.Context(), col))
+			}
 			rec := &statusRecorder{ResponseWriter: w}
 			start := time.Now()
 			defer func() {
 				active.Dec()
+				m.recordDetection(col)
 				status := rec.status
 				p := recover()
 				if p != nil {
@@ -132,6 +158,37 @@ func (m *Metrics) Middleware(route func(*http.Request) string) func(http.Handler
 			next.ServeHTTP(rec, r)
 		})
 	}
+}
+
+// recordDetection adds the request's confirmed personal entities and input
+// token count. Only canonical type names become label values.
+func (m *Metrics) recordDetection(col *audit.Collector) {
+	entities, _ := col.Snapshot()
+	for _, e := range entities {
+		if !e.Personal {
+			continue
+		}
+		t := e.Type
+		if _, ok := m.entityTypes[t]; !ok {
+			t = "other"
+		}
+		m.entities.WithLabelValues(t).Inc()
+	}
+	if n := col.InputTokens(); n > 0 {
+		m.inputTokens.Add(float64(n))
+	}
+}
+
+// RegisterVaultMappings publishes pii_vault_mappings, the number of live vault
+// mappings, read from count at scrape time. A nil *Metrics ignores the call.
+func (m *Metrics) RegisterVaultMappings(count func() int) {
+	if m == nil {
+		return
+	}
+	m.reg.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "pii_vault_mappings",
+		Help: "Number of live token mappings held in the vault.",
+	}, func() float64 { return float64(count()) }))
 }
 
 // methodLabel returns method when it is a known HTTP method and _OTHER

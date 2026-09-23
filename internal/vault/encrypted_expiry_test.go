@@ -273,3 +273,33 @@ func TestEncryptedCurrentKeyExpiryFailClosed(t *testing.T) {
 		t.Errorf("expired current key Resolve() error = %v, want ErrNotFound", err)
 	}
 }
+
+// TestEncryptedLenCountsLiveMappings proves Len reports live mappings only:
+// revoked and expired mappings are not counted.
+func TestEncryptedLenCountsLiveMappings(t *testing.T) {
+	start := time.Unix(1_000_000, 0)
+	now := start
+	e, err := newEncryptedWithClock(testMasterKey(), time.Minute, func() time.Time { return now })
+	if err != nil {
+		t.Fatalf("newEncryptedWithClock() error = %v", err)
+	}
+	ctx := context.Background()
+	for _, k := range []struct{ scope, token string }{{"s1", "t1"}, {"s1", "t2"}, {"s2", "t1"}} {
+		if err := e.Save(ctx, k.scope, k.token, "synthetic-"+k.token); err != nil {
+			t.Fatalf("Save() error = %v", err)
+		}
+	}
+	if got := e.Len(); got != 3 {
+		t.Fatalf("Len() = %d, want 3", got)
+	}
+	if err := e.RevokeScope(ctx, "s1"); err != nil {
+		t.Fatalf("RevokeScope() error = %v", err)
+	}
+	if got := e.Len(); got != 1 {
+		t.Fatalf("Len() after revoke = %d, want 1", got)
+	}
+	now = start.Add(2 * time.Minute)
+	if got := e.Len(); got != 0 {
+		t.Fatalf("Len() after expiry = %d, want 0", got)
+	}
+}

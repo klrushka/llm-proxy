@@ -304,6 +304,15 @@ func (e *Encrypted) RevokeScope(ctx context.Context, scope string) error {
 	return nil
 }
 
+// Len returns the number of live mappings after sweeping expired ones. It is
+// a safe numeric aggregate for metrics and never exposes mapping content.
+func (e *Encrypted) Len() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.sweepExpired(e.now())
+	return len(e.mapping)
+}
+
 // sweepExpired removes genuinely expired mappings by inspecting only the head
 // of the expiry min-heap, bounded to at most maxSweepPops per call so a mass
 // simultaneous expiry cannot turn one operation into an unbounded drain under

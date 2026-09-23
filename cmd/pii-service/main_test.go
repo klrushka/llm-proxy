@@ -1447,3 +1447,47 @@ func TestMetricsMeasureLLMCalls(t *testing.T) {
 		t.Errorf("metrics leak request data")
 	}
 }
+
+// TestMetricsCountDetectedEntitiesThroughAudit proves confirmed entities and
+// input tokens reach the metrics through the real audit collector without any
+// entity value.
+func TestMetricsCountDetectedEntitiesThroughAudit(t *testing.T) {
+	pipe, handlers := newTestPipeline(t)
+	op := process.NewOperation(process.NewStore(), func(ctx context.Context, payload string) (string, error) {
+		res, err := handlers.Tokenize(ctx, api.TokenizeRequest{Text: payload, ScopeID: processScope})
+		if err != nil {
+			return "", err
+		}
+		return res.TokenizedText, nil
+	})
+	cfg := config.Config{LLM: config.LLMConfig{Timeout: config.DefaultLLMTimeout}}
+	mux, err := buildRouter(cfg, pipe, handlers, op, nil)
+	if err != nil {
+		t.Fatalf("buildRouter() error = %v", err)
+	}
+	reg, err := detection.New()
+	if err != nil {
+		t.Fatalf("detection.New() error = %v", err)
+	}
+	types := make([]string, 0, len(reg.Types()))
+	for _, ty := range reg.Types() {
+		types = append(types, string(ty))
+	}
+	m := metrics.New(metrics.Options{EntityTypes: types})
+	handler := composeHandler(cfg, audit.New(io.Discard), mux, m, maxConcurrentRequests)
+
+	rec := doJSON(t, handler, http.MethodPost, "/process",
+		`{"payload":"Пишите на ivanov@example.com","payload_id":"id-1"}`, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	body := scrapeMetrics(t, m)
+	for _, want := range []string{`pii_entities_detected_total{type="EMAIL"} 1`, "pii_input_tokens_total 3"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("metrics missing %q", want)
+		}
+	}
+	if strings.Contains(body, "ivanov") {
+		t.Errorf("metrics leak an entity value")
+	}
+}

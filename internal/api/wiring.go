@@ -15,6 +15,7 @@ import (
 	"github.com/klrushka/llm-proxy/internal/contextual"
 	"github.com/klrushka/llm-proxy/internal/detection"
 	"github.com/klrushka/llm-proxy/internal/merge"
+	"github.com/klrushka/llm-proxy/internal/metrics"
 	"github.com/klrushka/llm-proxy/internal/ownership"
 	"github.com/klrushka/llm-proxy/internal/policy"
 	"github.com/klrushka/llm-proxy/internal/rules"
@@ -168,11 +169,12 @@ func (p *Pipeline) detectEntities(ctx context.Context, text string) ([]ownership
 	})
 
 	// Record only safe allowlisted metadata (types, personal flags, sources,
-	// reason codes) into the request audit collector. The collector accepts
+	// reason codes) and the input token count into the request audit collector. The collector accepts
 	// only audit.Entity and never carries plaintext values, offsets, mappings
 	// or keys. If no collector is present (e.g. a request that did not pass
 	// through the outer audit middleware) this is a no-op.
 	if col, ok := audit.CollectorFromContext(ctx); ok {
+		col.AddInputTokens(metrics.CountTokens(text))
 		for _, r := range results {
 			col.AddEntity(auditEntityFromOwnership(r))
 		}

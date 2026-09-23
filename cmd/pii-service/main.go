@@ -103,7 +103,8 @@ func run() error {
 	}
 	p := policy.NewPolicy(allowed)
 
-	regMetrics := metrics.New(metrics.Options{Version: version.Version, ModelMode: cfg.ModelMode})
+	regMetrics := metrics.New(metrics.Options{Version: version.Version, ModelMode: cfg.ModelMode, EntityTypes: allowed})
+	regMetrics.RegisterVaultMappings(v.Len)
 
 	client, err := modelclient.New(cfg.ModelWorkerURL, modelclient.Mode(cfg.ModelMode), cfg.ModelClientTimeout,
 		modelclient.WithTransport(regMetrics.InstrumentTransport("model_worker", modelclient.Operation, nil)))

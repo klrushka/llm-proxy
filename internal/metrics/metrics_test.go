@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/klrushka/llm-proxy/internal/audit"
 )
 
 // scrape returns the /metrics body served by m.
@@ -216,4 +218,64 @@ func TestNilMetricsInstrumentTransportReturnsNext(t *testing.T) {
 	if rt := m.InstrumentTransport("x", nil, nil); rt != http.DefaultTransport {
 		t.Errorf("InstrumentTransport() = %T, want http.DefaultTransport", rt)
 	}
+}
+
+func TestMiddlewareCountsConfirmedEntitiesByCanonicalType(t *testing.T) {
+	m := New(Options{EntityTypes: []string{"EMAIL", "PHONE"}})
+	h := m.Middleware(fixedRoute("/v1/pii/detect"))(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		col, ok := audit.CollectorFromContext(r.Context())
+		if !ok {
+			t.Fatal("no collector in request context")
+		}
+		col.AddEntity(audit.Entity{Type: "EMAIL", Personal: true})
+		col.AddEntity(audit.Entity{Type: "EMAIL", Personal: true})
+		col.AddEntity(audit.Entity{Type: "EMAIL", Personal: false})
+		col.AddEntity(audit.Entity{Type: "PII_CANARY_TYPE", Personal: true})
+		col.AddInputTokens(7)
+	}))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/pii/detect", nil))
+
+	body := scrape(t, m)
+	for _, want := range []string{
+		`pii_entities_detected_total{type="EMAIL"} 2`,
+		`pii_entities_detected_total{type="PHONE"} 0`,
+		`pii_entities_detected_total{type="other"} 1`,
+		`pii_input_tokens_total 7`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("metrics body missing %q", want)
+		}
+	}
+	if strings.Contains(body, "PII_CANARY_TYPE") {
+		t.Errorf("non-canonical type leaked into labels")
+	}
+}
+
+func TestMiddlewareReusesAuditCollector(t *testing.T) {
+	m := New(Options{EntityTypes: []string{"EMAIL"}})
+	outer := audit.NewCollector()
+	h := m.Middleware(fixedRoute("/process"))(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		col, _ := audit.CollectorFromContext(r.Context())
+		if col != outer {
+			t.Error("middleware replaced the audit collector")
+		}
+		col.AddEntity(audit.Entity{Type: "EMAIL", Personal: true})
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/process", nil)
+	h.ServeHTTP(httptest.NewRecorder(), req.WithContext(audit.WithCollector(req.Context(), outer)))
+
+	if body := scrape(t, m); !strings.Contains(body, `pii_entities_detected_total{type="EMAIL"} 1`) {
+		t.Errorf("entity from audit collector not counted")
+	}
+}
+
+func TestRegisterVaultMappings(t *testing.T) {
+	m := New(Options{})
+	n := 3
+	m.RegisterVaultMappings(func() int { return n })
+	if body := scrape(t, m); !strings.Contains(body, "pii_vault_mappings 3") {
+		t.Errorf("metrics body missing pii_vault_mappings 3")
+	}
+	var nilMetrics *Metrics
+	nilMetrics.RegisterVaultMappings(func() int { return 1 })
 }
