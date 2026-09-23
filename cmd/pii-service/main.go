@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -52,10 +53,16 @@ const windowOverlapTokens = 64
 // windows of a single long-text request.
 const windowConcurrency = 4
 
-// maxConcurrentRequests is the fixed cap on concurrently executing HTTP
-// requests admitted by the admission middleware. When the cap is reached a new
-// request is rejected immediately with 429 and no waiter queue is formed.
-const maxConcurrentRequests = 64
+// Keep enough short requests in flight for identical texts to coalesce before
+// worker admission. The shared worker limiter still caps expensive POSTs at 4.
+// Unknown body lengths reserve the API decoder's full 8 MiB/body limit.
+const (
+	maxConcurrentRequests = 1024
+	maxQueuedRequests     = 128
+	maxQueuedBytes        = 8 << 20
+	unknownBodyBytes      = 8 << 20
+	requestDeadline       = 10 * time.Second
+)
 
 const (
 	serverReadHeaderTimeout = 10 * time.Second
@@ -218,6 +225,9 @@ func newServer(addr string, handler http.Handler, writeTimeout time.Duration) *h
 // audit -> metrics -> admission -> router.
 func composeHandler(cfg config.Config, logger *audit.Logger, mux *http.ServeMux, m *metrics.Metrics, admissionLimit int, debugLoggers ...*debughttp.Logger) http.Handler {
 	admission := newAdmissionMiddleware(admissionLimit)
+	if admissionLimit == maxConcurrentRequests {
+		admission = newQueuedAdmissionMiddleware(admissionLimit, maxQueuedRequests, maxQueuedBytes, requestDeadline)
+	}
 	instrument := m.Middleware(routeTemplate(mux))
 	handler := http.Handler(mux)
 	if len(debugLoggers) > 0 && debugLoggers[0] != nil {
@@ -270,8 +280,27 @@ func serverWriteTimeout(cfg config.Config) time.Duration {
 // is full a request is rejected immediately with a fixed safe 429 and no
 // waiter queue is formed.
 type admissionMiddleware struct {
-	permits chan struct{}
-	next    http.Handler
+	permits    chan struct{}
+	next       http.Handler
+	waiters    chan struct{}
+	mu         sync.Mutex
+	inUseBytes int64
+	maxBytes   int64
+	deadline   time.Duration
+}
+
+// newQueuedAdmissionMiddleware adds a bounded, context-aware wait before the
+// router can decode a body or create a process claim.
+func newQueuedAdmissionMiddleware(limit, maxWaiters int, maxBytes int64, deadline time.Duration) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return &admissionMiddleware{
+			permits:  make(chan struct{}, limit),
+			waiters:  make(chan struct{}, maxWaiters),
+			maxBytes: maxBytes,
+			deadline: deadline,
+			next:     next,
+		}
+	}
 }
 
 // newAdmissionMiddleware returns an admissionMiddleware that allows at most
@@ -296,17 +325,86 @@ func (m *admissionMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		m.next.ServeHTTP(w, r)
 		return
 	}
+	ctx := r.Context()
+	if m.deadline > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, m.deadline)
+		defer cancel()
+	}
+	if m.maxBytes > 0 {
+		if !m.reserve(r.ContentLength) {
+			m.reject(w)
+			return
+		}
+		defer m.releaseBytes(r.ContentLength)
+	}
 	select {
 	case m.permits <- struct{}{}:
+		// Already canceled contexts must not enter the router.
+		if ctx.Err() != nil {
+			<-m.permits
+			m.reject(w)
+			return
+		}
 	default:
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Retry-After", "1")
-		w.WriteHeader(http.StatusTooManyRequests)
-		_, _ = w.Write([]byte(`{"error":"service overloaded"}`))
-		return
+		if m.waiters == nil || !m.wait(ctx) {
+			m.reject(w)
+			return
+		}
 	}
 	defer func() { <-m.permits }()
-	m.next.ServeHTTP(w, r)
+	m.next.ServeHTTP(w, r.WithContext(ctx))
+}
+
+func (m *admissionMiddleware) reservation(contentLength int64) int64 {
+	bytes := contentLength
+	if bytes < 0 {
+		bytes = unknownBodyBytes
+	}
+	return bytes
+}
+
+func (m *admissionMiddleware) reserve(contentLength int64) bool {
+	bytes := m.reservation(contentLength)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if bytes > m.maxBytes || m.inUseBytes > m.maxBytes-bytes {
+		return false
+	}
+	m.inUseBytes += bytes
+	return true
+}
+
+func (m *admissionMiddleware) releaseBytes(contentLength int64) {
+	m.mu.Lock()
+	m.inUseBytes -= m.reservation(contentLength)
+	m.mu.Unlock()
+}
+
+func (m *admissionMiddleware) wait(ctx context.Context) bool {
+	select {
+	case m.waiters <- struct{}{}:
+	default:
+		return false
+	}
+	defer func() { <-m.waiters }()
+	select {
+	case m.permits <- struct{}{}:
+		if ctx.Err() != nil {
+			<-m.permits
+			return false
+		}
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (m *admissionMiddleware) reject(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Retry-After", "1")
+	w.WriteHeader(http.StatusTooManyRequests)
+	_, _ = w.Write([]byte(`{"error":"service overloaded"}`))
 }
 
 // buildRouter wires the HTTP router. The runtime route runs the full product
