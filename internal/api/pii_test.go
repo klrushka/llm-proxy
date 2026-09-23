@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -259,6 +260,33 @@ func TestDetectOperationErrorIsSafe(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), "secret internal detail") {
 		t.Errorf("body leaks internal error: %q", rec.Body.String())
+	}
+}
+
+// TestModelUnavailableFailsClosedWith503 proves detect and tokenize report a
+// model worker outage as 503 with a fixed safe body, not as 500.
+func TestModelUnavailableFailsClosedWith503(t *testing.T) {
+	outage := fmt.Errorf("%w: secret internal detail", ErrModelUnavailable)
+	h := PIIHandlers{
+		Detect: func(_ context.Context, _ DetectRequest) (DetectResponse, error) {
+			return DetectResponse{}, outage
+		},
+		Tokenize: func(_ context.Context, _ TokenizeRequest) (TokenizeResponse, error) {
+			return TokenizeResponse{}, outage
+		},
+	}
+	mux := NewRouter(nil, WithPIIHandlers(h))
+	for _, rt := range []struct{ path, body string }{
+		{"/v1/pii/detect", `{"text":"x"}`},
+		{"/v1/pii/tokenize", `{"text":"x","scope_id":"s1"}`},
+	} {
+		rec := doJSONRequest(t, mux, http.MethodPost, rt.path, rt.body)
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Errorf("%s status = %d, want %d", rt.path, rec.Code, http.StatusServiceUnavailable)
+		}
+		if strings.Contains(rec.Body.String(), "secret internal detail") {
+			t.Errorf("%s body leaks internal error: %q", rt.path, rec.Body.String())
+		}
 	}
 }
 

@@ -1491,3 +1491,50 @@ func TestMetricsCountDetectedEntitiesThroughAudit(t *testing.T) {
 		t.Errorf("metrics leak an entity value")
 	}
 }
+
+// TestModelWorkerOutageMapsTo503 proves the real model detector over an
+// unreachable worker fails closed with 503 on /v1/pii/* and on /process.
+func TestModelWorkerOutageMapsTo503(t *testing.T) {
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer worker.Close()
+	client, err := modelclient.New(worker.URL, modelclient.ModeFull, time.Second)
+	if err != nil {
+		t.Fatalf("modelclient.New() error = %v", err)
+	}
+	reg, err := detection.New()
+	if err != nil {
+		t.Fatalf("detection.New() error = %v", err)
+	}
+	pipe := newPipelineWithModel(t, modelDetector(client, reg), "EMAIL")
+	handlers := pipe.Handlers()
+	op := process.NewOperation(process.NewStore(), func(ctx context.Context, payload string) (string, error) {
+		res, err := handlers.Tokenize(ctx, api.TokenizeRequest{Text: payload, ScopeID: processScope})
+		if err != nil {
+			if errors.Is(err, modelclient.ErrModelUnavailable) {
+				return "", process.ErrModelUnavailable
+			}
+			return "", err
+		}
+		return res.TokenizedText, nil
+	})
+	mux, err := buildRouter(config.Config{LLM: config.LLMConfig{Timeout: config.DefaultLLMTimeout}}, pipe, handlers, op, nil)
+	if err != nil {
+		t.Fatalf("buildRouter() error = %v", err)
+	}
+
+	for _, rt := range []struct{ path, body string }{
+		{"/v1/pii/detect", `{"text":"email ivanov@example.com"}`},
+		{"/v1/pii/tokenize", `{"text":"email ivanov@example.com","scope_id":"s1"}`},
+		{"/process", `{"payload":"email ivanov@example.com","payload_id":"id-1"}`},
+	} {
+		rec := doJSON(t, mux, http.MethodPost, rt.path, rt.body, nil)
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Errorf("POST %s status = %d, want %d; body = %q", rt.path, rec.Code, http.StatusServiceUnavailable, rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "ivanov") {
+			t.Errorf("POST %s body leaks input", rt.path)
+		}
+	}
+}

@@ -30,6 +30,12 @@ import (
 // classify the failure with errors.Is without string matching.
 var ErrReviewRequired = errors.New("tokenize: review required")
 
+// ErrModelUnavailable is the fixed safe sentinel a ModelDetector wraps when
+// the model worker is unavailable. The extended API maps it to 503 so the
+// failure is reported as a fail-closed dependency outage, not an internal
+// error.
+var ErrModelUnavailable = errors.New("api: model worker unavailable")
+
 // ModelDetector is the model-worker boundary. It returns model detection
 // candidates for text. A nil or empty result means the model contributed no
 // candidates (e.g. fast mode or an unavailable worker). It is the only

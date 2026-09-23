@@ -338,6 +338,11 @@ func modelDetector(client *modelclient.Client, reg *detection.Registry) api.Mode
 	return func(ctx context.Context, text string) ([]detection.Candidate, error) {
 		entities, err := client.InferBounded(ctx, text, windowOverlapTokens, windowConcurrency)
 		if err != nil {
+			// Keep the modelclient classification for /process and add the
+			// API sentinel so /v1/pii/* fail closed with 503.
+			if errors.Is(err, modelclient.ErrModelUnavailable) {
+				return nil, fmt.Errorf("%w: %w", api.ErrModelUnavailable, err)
+			}
 			return nil, err
 		}
 		validated := validatedDocumentIndex(text)

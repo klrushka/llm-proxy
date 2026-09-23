@@ -140,6 +140,10 @@ func handleDetect(op DetectFunc) http.HandlerFunc {
 			return
 		}
 		resp, err := op(r.Context(), req)
+		if errors.Is(err, ErrModelUnavailable) {
+			writeJSONError(w, http.StatusServiceUnavailable, "model worker unavailable")
+			return
+		}
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "detect failed")
 			return
@@ -167,6 +171,10 @@ func handleTokenize(op TokenizeFunc) http.HandlerFunc {
 			return
 		}
 		resp, err := op(r.Context(), req)
+		if errors.Is(err, ErrModelUnavailable) {
+			writeJSONError(w, http.StatusServiceUnavailable, "model worker unavailable")
+			return
+		}
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "tokenize failed")
 			return
