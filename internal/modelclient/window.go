@@ -187,6 +187,9 @@ func (c *Client) InferBounded(ctx context.Context, text string, overlapTokens, c
 // matches ErrModelUnavailable while preserving context identity, so no new HTTP
 // request is started.
 func (c *Client) acquireGlobal(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return wrapTransport(err)
+	}
 	select {
 	case c.globalSem <- struct{}{}:
 		if err := ctx.Err(); err != nil {
@@ -194,8 +197,8 @@ func (c *Client) acquireGlobal(ctx context.Context) error {
 			return wrapTransport(err)
 		}
 		return nil
-	case <-ctx.Done():
-		return wrapTransport(ctx.Err())
+	default:
+		return ErrModelUnavailable
 	}
 }
 

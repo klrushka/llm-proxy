@@ -43,6 +43,7 @@ type Metrics struct {
 	entities       *prometheus.CounterVec
 	inputTokens    prometheus.Counter
 	nerCache       *prometheus.CounterVec
+	rulesFallback  *prometheus.CounterVec
 	entityTypes    map[string]struct{}
 }
 
@@ -113,12 +114,19 @@ func New(opts Options) *Metrics {
 	for _, outcome := range []string{"hit", "miss", "coalesced", "uncached"} {
 		m.nerCache.WithLabelValues(outcome)
 	}
+	m.rulesFallback = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "pii_rules_only_fallback_attempts_total",
+		Help: "Model-unavailable process requests attempted with the explicitly enabled rules-only fallback.",
+	}, []string{"outcome"})
+	for _, outcome := range []string{"success", "review", "error"} {
+		m.rulesFallback.WithLabelValues(outcome)
+	}
 	m.entityTypes = make(map[string]struct{}, len(opts.EntityTypes))
 	for _, t := range opts.EntityTypes {
 		m.entityTypes[t] = struct{}{}
 		m.entities.WithLabelValues(t)
 	}
-	reg.MustRegister(m.serverDuration, m.serverActive, m.serverBodySize, m.clientDuration, m.entities, m.inputTokens, m.nerCache)
+	reg.MustRegister(m.serverDuration, m.serverActive, m.serverBodySize, m.clientDuration, m.entities, m.inputTokens, m.nerCache, m.rulesFallback)
 	return m
 }
 
@@ -130,6 +138,16 @@ func (m *Metrics) RecordNERCache(outcome string) {
 	switch outcome {
 	case "hit", "miss", "coalesced", "uncached":
 		m.nerCache.WithLabelValues(outcome).Inc()
+	}
+}
+
+func (m *Metrics) RecordRulesFallback(outcome string) {
+	if m == nil {
+		return
+	}
+	switch outcome {
+	case "success", "review", "error":
+		m.rulesFallback.WithLabelValues(outcome).Inc()
 	}
 }
 

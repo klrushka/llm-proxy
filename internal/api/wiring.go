@@ -109,10 +109,14 @@ func (p *Pipeline) RuntimeCoordinator(llm runtime.LLMClient) *runtime.Coordinato
 // detectEntities runs the full detection pipeline and returns ownership
 // results with the static processing policy applied. It never returns plaintext values.
 func (p *Pipeline) detectEntities(ctx context.Context, text string) ([]ownership.Entity, error) {
+	return p.detectEntitiesWithModel(ctx, text, p.model)
+}
+
+func (p *Pipeline) detectEntitiesWithModel(ctx context.Context, text string, model ModelDetector) ([]ownership.Entity, error) {
 	pol := p.policy
 	var candidates []detection.Candidate
-	if p.model != nil {
-		mc, err := p.model(ctx, text)
+	if model != nil {
+		mc, err := model(ctx, text)
 		if err != nil {
 			return nil, err
 		}
@@ -269,7 +273,18 @@ func (p *Pipeline) detect(ctx context.Context, req DetectRequest) (DetectRespons
 }
 
 func (p *Pipeline) tokenize(ctx context.Context, req TokenizeRequest) (TokenizeResponse, error) {
-	results, err := p.detectEntities(ctx, req.Text)
+	return p.tokenizeWithModel(ctx, req, p.model)
+}
+
+// TokenizeRulesOnly uses the same policy, token issuer, vault, scope and
+// lifecycle lock as full tokenization, but omits model candidates. Callers
+// must explicitly gate this degraded capability on model unavailability.
+func (p *Pipeline) TokenizeRulesOnly(ctx context.Context, req TokenizeRequest) (TokenizeResponse, error) {
+	return p.tokenizeWithModel(ctx, req, nil)
+}
+
+func (p *Pipeline) tokenizeWithModel(ctx context.Context, req TokenizeRequest, model ModelDetector) (TokenizeResponse, error) {
+	results, err := p.detectEntitiesWithModel(ctx, req.Text, model)
 	if err != nil {
 		return TokenizeResponse{}, err
 	}

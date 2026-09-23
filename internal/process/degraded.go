@@ -70,6 +70,8 @@ func sanitizeMaskError(err error) error {
 	switch {
 	case errors.Is(err, ErrVaultUnavailable):
 		return ErrVaultUnavailable
+	case errors.Is(err, ErrReviewRequired):
+		return ErrReviewRequired
 	case errors.Is(err, ErrModelUnavailable):
 		return ErrModelUnavailable
 	default:

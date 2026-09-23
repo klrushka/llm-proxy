@@ -13,8 +13,8 @@ import (
 	"time"
 )
 
-// This synthetic worker rejects the fifth concurrent POST, as production does.
-// Planning and inference must use the same four worker slots.
+// Planning and inference share four worker slots; excess callers return a
+// safe unavailable classification immediately for the process fallback.
 func TestAllWorkerPostsShareCapacity(t *testing.T) {
 	var active, peak atomic.Int64
 	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -54,10 +54,16 @@ func TestAllWorkerPostsShareCapacity(t *testing.T) {
 	}
 	wg.Wait()
 	close(errs)
+	busy := 0
 	for err := range errs {
-		if err != nil {
-			t.Fatalf("worker POST failed: %v (peak %d)", err, peak.Load())
+		if errors.Is(err, ErrModelUnavailable) {
+			busy++
+		} else if err != nil {
+			t.Fatalf("worker POST failed unexpectedly: %v (peak %d)", err, peak.Load())
 		}
+	}
+	if busy == 0 {
+		t.Fatal("full worker gate did not reject any excess call")
 	}
 	if got := peak.Load(); got > globalInferLimit {
 		t.Fatalf("worker POST peak = %d, want <= %d", got, globalInferLimit)
@@ -106,4 +112,41 @@ func TestQueuedWorkerPostCancellationDoesNotLeakPermit(t *testing.T) {
 	if _, err := c.Infer(context.Background(), "abc"); err != nil {
 		t.Fatalf("post-release Infer = %v", err)
 	}
+}
+
+func TestFullWorkerGateImmediatelyRejectsAllExpensivePosts(t *testing.T) {
+	entered := make(chan struct{}, globalInferLimit)
+	release := make(chan struct{})
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		entered <- struct{}{}
+		<-release
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(responseJSON())), Header: make(http.Header)}, nil
+	})
+	c, err := New("http://worker.test", ModeFull, time.Second, WithTransport(rt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < globalInferLimit; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); _, _ = c.Infer(context.Background(), "synthetic") }()
+	}
+	for i := 0; i < globalInferLimit; i++ {
+		<-entered
+	}
+	for name, call := range map[string]func() error{
+		"infer": func() error { _, err := c.Infer(context.Background(), "synthetic"); return err },
+		"plan":  func() error { _, err := c.PlanWindows(context.Background(), "synthetic", 0); return err },
+		"count": func() error { _, err := c.CountTokens(context.Background(), "synthetic"); return err },
+	} {
+		start := time.Now()
+		if err := call(); !errors.Is(err, ErrModelUnavailable) {
+			t.Errorf("%s busy error = %v", name, err)
+		}
+		if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+			t.Errorf("%s waited for busy worker: %v", name, elapsed)
+		}
+	}
+	close(release)
+	wg.Wait()
 }

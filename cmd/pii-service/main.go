@@ -132,10 +132,11 @@ func run() error {
 	pipe := api.NewPipeline(modelDetectorWithCache(client, reg, regMetrics.RecordNERCache), p, issuer, v)
 	handlers := pipe.Handlers()
 
-	// The /process masker is the real pipeline tokenize path. A model-worker
-	// unavailability is classified to the process-level sentinel so the
-	// operation fails closed with 503 instead of a generic 500.
-	op := process.NewOperation(process.NewStore(), processMask(handlers))
+	// The explicitly enabled degraded path uses the same pipeline, vault and
+	// scope. It runs only after a model-unavailable result; ambiguous entities
+	// still require review and storage failures still fail closed.
+	mask := hybridProcessMask(pipe, regMetrics.RecordRulesFallback)
+	op := process.NewOperation(process.NewStore(), mask)
 
 	logger := audit.New(os.Stderr)
 
@@ -443,8 +444,30 @@ func modelDetector(client *modelclient.Client, reg *detection.Registry) api.Mode
 }
 
 func processMask(handlers api.PIIHandlers) process.MaskFunc {
+	return processMaskTokenize(handlers.Tokenize)
+}
+
+func hybridProcessMask(pipe *api.Pipeline, record func(string)) process.MaskFunc {
+	rulesOnly := processMaskTokenize(pipe.TokenizeRulesOnly)
+	fallback := func(ctx context.Context, payload string) (string, error) {
+		result, err := rulesOnly(ctx, payload)
+		if record != nil {
+			outcome := "success"
+			if errors.Is(err, process.ErrReviewRequired) {
+				outcome = "review"
+			} else if err != nil {
+				outcome = "error"
+			}
+			record(outcome)
+		}
+		return result, err
+	}
+	return process.WithRulesOnlyFallback(true, processMask(pipe.Handlers()), fallback)
+}
+
+func processMaskTokenize(tokenize api.TokenizeFunc) process.MaskFunc {
 	return func(ctx context.Context, payload string) (string, error) {
-		res, err := handlers.Tokenize(ctx, api.TokenizeRequest{Text: payload, ScopeID: processScope})
+		res, err := tokenize(ctx, api.TokenizeRequest{Text: payload, ScopeID: processScope})
 		if err != nil {
 			if errors.Is(err, modelclient.ErrModelUnavailable) || errors.Is(err, api.ErrModelUnavailable) {
 				return "", process.ErrModelUnavailable
