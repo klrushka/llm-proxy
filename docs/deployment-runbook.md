@@ -41,6 +41,7 @@ produced by task 13.1.
 | --- | --- | --- |
 | `8080` | Go `pii-service` | Yes (`8080:8080`) |
 | `8000` | Python `model-worker` | No (internal bridge only) |
+| `9464` | Go `pii-service` metrics | No (internal bridge only) |
 
 `8080` must be free on the host. `8000` is reachable only from the Go container
 at `http://model-worker:8000`. Disk: a few GB for the models plus images.
@@ -76,6 +77,7 @@ host-local env file.
 | `PII_VAULT_TTL` | `15m` | no | TTL of token mappings in the vault. |
 | `PII_MODEL_CLIENT_TIMEOUT` | `30s` | no | Timeout for worker calls. |
 | `PII_API_LISTEN_ADDRESS` | `127.0.0.1:8080` | no | Overridden to `0.0.0.0:8080` by the compose file. |
+| `PII_METRICS_LISTEN_ADDRESS` | `127.0.0.1:9464` | no | Internal Prometheus listener. Overridden to `0.0.0.0:9464` by the compose file; must never be published. |
 | `PII_MODEL_WORKER_URL` | `http://127.0.0.1:8000` | no | Overridden to `http://model-worker:8000` by the compose file. |
 | `PII_LLM_URL` | — | no | URL of a chat-completions-compatible downstream LLM. Optional as a group with `PII_LLM_MODEL`. |
 | `PII_LLM_MODEL` | — | no | Model identifier sent in the outbound JSON. Optional as a group with `PII_LLM_URL`. |
@@ -157,7 +159,9 @@ PII_MODEL_MODE=fast docker compose -p llm-proxy --env-file /srv/llm-proxy/env \
 ```sh
 curl -fsS http://localhost:8080/health/live    # {"status":"ok"}
 curl -fsS http://localhost:8080/health/ready   # {"status":"ready"}
-curl -fsS http://localhost:8080/metrics
+docker compose -p llm-proxy --env-file /srv/llm-proxy/env \
+  -f /srv/llm-proxy/releases/<short-sha>/docker-compose.yml \
+  exec pii-service wget -q -O - http://127.0.0.1:9464/metrics
 
 # Worker health (full mode only), verified in-container with BusyBox wget
 docker compose -p llm-proxy --env-file /srv/llm-proxy/env \
@@ -167,6 +171,29 @@ docker compose -p llm-proxy --env-file /srv/llm-proxy/env \
 
 A healthy `/health/ready` returns `{"status":"ready"}`; the worker `/health`
 returns `{"status":"ok","models":[...]}`.
+
+## Monitoring
+
+`GET /metrics` is served only on the internal metrics listener (`9464`), not on
+the API port. The network must restrict it to
+the Prometheus collector: in compose the port is only `expose`d on the private
+network; in Kubernetes add a NetworkPolicy that admits ingress to `9464` only
+from the monitoring namespace.
+
+Scrape config for a Prometheus attached to the same network:
+
+```yaml
+scrape_configs:
+  - job_name: pii-service
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["pii-service:9464"]
+```
+
+- Grafana dashboard: `deploy/grafana/pii-service-dashboard.json`.
+- Alert rules: `deploy/prometheus/alerts.yml` (`promtool check rules` must pass).
+- The legacy gauges `pii_latency_*`, `pii_rps` and `pii_tps` were removed; use
+  `http_server_request_duration_seconds` instead.
 
 ## Logs and status
 
@@ -248,7 +275,9 @@ PII_MODEL_MODE=fast docker compose -p llm-proxy --env-file /srv/llm-proxy/env \
 # 3. Health and readiness (fail on non-2xx)
 curl -fsS http://localhost:8080/health/live
 curl -fsS http://localhost:8080/health/ready
-curl -fsS http://localhost:8080/metrics
+docker compose -p llm-proxy --env-file /srv/llm-proxy/env \
+  -f /srv/llm-proxy/releases/<short-sha>/docker-compose.yml \
+  exec pii-service wget -q -O - http://127.0.0.1:9464/metrics
 
 # 4. Benchmark adapter round trip (synthetic data only)
 MASK=$(curl -fsS -X POST http://localhost:8080/process \

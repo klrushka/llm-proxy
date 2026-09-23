@@ -27,7 +27,7 @@ COPY --from=build /out/pii-service /usr/local/bin/pii-service
 
 USER pii
 
-EXPOSE 8080
+EXPOSE 8080 9464
 
 # wget is present in the base alpine image (busybox). The healthcheck probes
 # the live endpoint; it never sends or logs request/response bodies.

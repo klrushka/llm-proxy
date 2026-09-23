@@ -17,6 +17,9 @@ services:
       dockerfile: Dockerfile
     environment:
       PII_API_LISTEN_ADDRESS: "0.0.0.0:8080"
+      # Internal Prometheus metrics listener. It bypasses consumer access, so it
+      # is only exposed on the private network and never published to the host.
+      PII_METRICS_LISTEN_ADDRESS: "0.0.0.0:9464"
       PII_MODEL_WORKER_URL: "http://model-worker:8000"
       PII_VAULT_KEY: "${PII_VAULT_KEY:?PII_VAULT_KEY must be set to a 32-byte base64 value}"
       PII_MODEL_MODE: "${PII_MODEL_MODE:-full}"
@@ -32,6 +35,8 @@ services:
       PII_LLM_TIMEOUT: "${PII_LLM_TIMEOUT:-60s}"
     ports:
       - "8080:8080"
+    expose:
+      - "9464"
     depends_on:
       model-worker:
         condition: service_healthy

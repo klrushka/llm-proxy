@@ -30,6 +30,8 @@ docker compose up -d --build
 
 - The Go service listens on `0.0.0.0:8080` and is published to the host at
   `http://localhost:8080`.
+- Prometheus metrics are served on the internal port `9464`, which is only
+  exposed on the private network and never published to the host.
 - The Python worker binds `0.0.0.0:8000` on the private bridge network only; it
   is not published to the host. The Go service reaches it at
   `http://model-worker:8000`. The network is not `internal: true` because the
@@ -42,8 +44,8 @@ docker compose up -d --build
 curl -s http://localhost:8080/health/live
 curl -s http://localhost:8080/health/ready
 
-# Metrics
-curl -s http://localhost:8080/metrics
+# Metrics (internal port, read from inside the container)
+docker compose exec pii-service wget -q -O - http://127.0.0.1:9464/metrics
 
 # Worker health (from inside the Go container, or via docker compose exec)
 docker compose exec pii-service wget -q -O - http://model-worker:8000/health

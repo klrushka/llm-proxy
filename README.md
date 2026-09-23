@@ -80,6 +80,7 @@ PII_MODEL_MODE=fast go run ./cmd/pii-service
 | --- | --- | --- |
 | `PII_VAULT_KEY` | — (обязателен) | Ключ vault, base64 от ровно 32 байт |
 | `PII_API_LISTEN_ADDRESS` | `127.0.0.1:8080` | Адрес HTTP-сервера |
+| `PII_METRICS_LISTEN_ADDRESS` | `127.0.0.1:9464` | Внутренний адрес `GET /metrics`, без проверки доступа; наружу не публиковать |
 | `PII_MODEL_WORKER_URL` | `http://127.0.0.1:8000` | Базовый URL Python-воркера |
 | `PII_MODEL_MODE` | `full` | `full` или `fast` |
 | `PII_MODEL_CLIENT_TIMEOUT` | `30s` | Таймаут вызова воркера |
@@ -99,8 +100,19 @@ LLM-конфигурация опциональна как полная груп
 ```sh
 curl -s http://localhost:8080/health/live    # {"status":"ok"}
 curl -s http://localhost:8080/health/ready   # {"status":"ready"}
-curl -s http://localhost:8080/metrics        # latency, RPS, TPS
+docker compose exec pii-service wget -q -O - http://127.0.0.1:9464/metrics
 ```
+
+Метрики отдаются в формате Prometheus на отдельном внутреннем порту `9464`, а не на
+API-порту. Названия HTTP-метрик — по OpenTelemetry semantic conventions:
+
+- `http_server_request_duration_seconds` — входящие запросы по методу, шаблону маршрута и коду ответа;
+- `http_client_request_duration_seconds` — вызовы model worker и downstream LLM;
+- `pii_entities_detected_total`, `pii_input_tokens_total`, `pii_vault_mappings`, `pii_build_info`;
+- `go_*`, `process_*` — Go runtime и процесс.
+
+Прежние гаужи `pii_latency_*`, `pii_rps`, `pii_tps` удалены. Дашборд Grafana и алерты
+Prometheus — в `deploy/`.
 
 ## Демо round trip через POST /process
 
