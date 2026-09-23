@@ -41,10 +41,6 @@ import (
 // accepts caller-supplied scopes.
 const processScope = "process"
 
-// metricsWindow is the sliding window over which /metrics aggregates latency,
-// RPS and TPS.
-const metricsWindow = time.Minute
-
 // windowOverlapTokens is the tokenizer-token overlap between adjacent windows
 // in the production long-text path. It lets entities spanning a window boundary
 // be seen in both windows.
@@ -129,7 +125,7 @@ func run() error {
 	}
 	op := process.NewOperation(process.NewStore(), mask)
 
-	regMetrics := metrics.NewRegistry(metricsWindow)
+	regMetrics := metrics.New(metrics.Options{Version: version.Version, ModelMode: cfg.ModelMode})
 	logger := audit.New(os.Stderr)
 
 	handler, err := buildRouter(cfg, pipe, handlers, op, regMetrics)
@@ -246,7 +242,7 @@ func (m *admissionMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 // WithRuntime is appended only when the group is complete: a nil option would
 // panic in NewRouter, which calls every option unconditionally. It returns the
 // router as an http.Handler for the server middleware chain.
-func buildRouter(cfg config.Config, pipe *api.Pipeline, handlers api.PIIHandlers, op *process.Operation, regMetrics *metrics.Registry) (http.Handler, error) {
+func buildRouter(cfg config.Config, pipe *api.Pipeline, handlers api.PIIHandlers, op *process.Operation, regMetrics *metrics.Metrics) (http.Handler, error) {
 	opts := []api.Option{
 		api.WithPIIHandlers(handlers),
 		api.WithProcess(op.Handle),

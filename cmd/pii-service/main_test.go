@@ -803,7 +803,7 @@ func TestBuildRouterUnconfiguredLLMNoPanic(t *testing.T) {
 		}
 		return res.TokenizedText, nil
 	})
-	regMetrics := metrics.NewRegistry(time.Minute)
+	regMetrics := metrics.New(metrics.Options{})
 
 	cfg := config.Config{LLM: config.LLMConfig{Timeout: config.DefaultLLMTimeout}}
 	mux, err := buildRouter(cfg, pipe, handlers, op, regMetrics)
@@ -965,7 +965,7 @@ func newPublicHandler(t *testing.T) http.Handler {
 		}
 		return res.TokenizedText, nil
 	})
-	regMetrics := metrics.NewRegistry(time.Minute)
+	regMetrics := metrics.New(metrics.Options{})
 	cfg := config.Config{LLM: config.LLMConfig{Timeout: config.DefaultLLMTimeout}}
 	handler, err := buildRouter(cfg, pipe, handlers, op, regMetrics)
 	if err != nil {

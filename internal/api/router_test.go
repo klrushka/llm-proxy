@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -10,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/klrushka/llm-proxy/internal/metrics"
-	"github.com/klrushka/llm-proxy/internal/process"
 )
 
 func doRequest(t *testing.T, mux *http.ServeMux, method, path string) *httptest.ResponseRecorder {
@@ -127,73 +125,26 @@ func TestRouterIsServeMux(t *testing.T) {
 	}
 }
 
-func TestMetricsRegistryServesLatencyRPSAndTPS(t *testing.T) {
-	reg := metrics.NewRegistry(0)
-	reg.Record(100_000_000, 10)
-	reg.Record(200_000_000, 20)
-	mux := NewRouter(nil, nil, WithMetrics(reg))
+func TestMetricsServesPrometheusFormat(t *testing.T) {
+	mux := NewRouter(nil, nil, WithMetrics(metrics.New(metrics.Options{Version: "test"})))
 
 	rec := doRequest(t, mux, http.MethodGet, "/metrics")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
-	body := rec.Body.String()
-	for _, want := range []string{"pii_latency_seconds", "pii_rps", "pii_tps"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("metrics body missing %q:\n%s", want, body)
-		}
+	if body := rec.Body.String(); !strings.Contains(body, "pii_build_info") {
+		t.Errorf("metrics body missing pii_build_info:\n%s", body)
 	}
 }
 
-func TestMetricsRegistryTakesPrecedenceOverPositionalHandler(t *testing.T) {
-	reg := metrics.NewRegistry(0)
-	reg.Record(100_000_000, 10)
+func TestMetricsTakesPrecedenceOverPositionalHandler(t *testing.T) {
 	positional := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 	})
-	mux := NewRouter(nil, positional, WithMetrics(reg))
+	mux := NewRouter(nil, positional, WithMetrics(metrics.New(metrics.Options{})))
 
 	rec := doRequest(t, mux, http.MethodGet, "/metrics")
 	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d (registry handler must win)", rec.Code, http.StatusOK)
-	}
-}
-
-func TestProcessRecordsMetricsObservation(t *testing.T) {
-	reg := metrics.NewRegistry(0)
-	h := ProcessFunc(func(_ context.Context, req process.Request) (process.Response, error) {
-		return process.Response{Result: "masked:" + req.Payload}, nil
-	})
-	mux := NewRouter(nil, nil, WithProcess(h), WithMetrics(reg))
-
-	rec := doJSONRequest(t, mux, http.MethodPost, "/process",
-		`{"payload":"Клиент ТЕСТОВ ТЕСТ","payload_id":"p1"}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
-	}
-
-	s := reg.Snapshot()
-	if s.Requests != 1 {
-		t.Errorf("Requests = %d, want 1", s.Requests)
-	}
-	if s.Tokens != 3 {
-		t.Errorf("Tokens = %d, want 3 (three whitespace-separated tokens)", s.Tokens)
-	}
-}
-
-func TestProcessWithoutMetricsDoesNotRecord(t *testing.T) {
-	reg := metrics.NewRegistry(0)
-	h := ProcessFunc(func(_ context.Context, req process.Request) (process.Response, error) {
-		return process.Response{Result: "masked:" + req.Payload}, nil
-	})
-	mux := NewRouter(nil, nil, WithProcess(h))
-
-	rec := doJSONRequest(t, mux, http.MethodPost, "/process",
-		`{"payload":"Клиент ТЕСТОВ","payload_id":"p1"}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
-	}
-	if s := reg.Snapshot(); s.Requests != 0 {
-		t.Errorf("Requests = %d, want 0 (registry not wired)", s.Requests)
+		t.Fatalf("status = %d, want %d (metrics handler must win)", rec.Code, http.StatusOK)
 	}
 }

@@ -1,11 +1,11 @@
 ## 1. Основа
 
-- [ ] 1.1 Подключить `prometheus/client_golang`: отдельный registry с `go_*`, `process_*` и `pii_build_info`; удалить старые гаужи `pii_latency_*`, `pii_rps`, `pii_tps`; observable check: unit test вывода проходит.
+- [x] 1.1 Подключить `prometheus/client_golang`: отдельный registry с `go_*`, `process_*` и `pii_build_info`; удалить старые гаужи `pii_latency_*`, `pii_rps`, `pii_tps` и оконный замер `recordProcess`; observable check: unit test вывода проходит.
 - [ ] 1.2 Добавить `PII_METRICS_LISTEN_ADDRESS` (по умолчанию `127.0.0.1:9464`) и поднять отдельный metrics listener; убрать `/metrics` с API listener, из consumer access и admission; observable check: wiring tests — `200` на metrics listener в обоих профилях, API listener метрики не отдаёт.
 
 ## 2. HTTP-метрики сервера
 
-- [ ] 2.1 Реализовать внешний middleware: `http_server_request_duration_seconds`, `http_server_active_requests`, `http_server_request_body_size_bytes` с метками метода, шаблона маршрута и статуса; снять `recordProcess`; observable check: tests для каждого маршрута, `401`/`403`/`429` и отсутствия `scope_id` в выводе проходят.
+- [ ] 2.1 Реализовать внешний middleware: `http_server_request_duration_seconds`, `http_server_active_requests`, `http_server_request_body_size_bytes` с метками метода, шаблона маршрута и статуса; observable check: tests для каждого маршрута, `401`/`403`/`429` и отсутствия `scope_id` в выводе проходят.
 
 ## 3. Зависимости и домен
 

@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/klrushka/llm-proxy/internal/api"
 	"github.com/klrushka/llm-proxy/internal/audit"
@@ -28,7 +27,7 @@ func newAuditHandler(t *testing.T) (http.Handler, *bytes.Buffer) {
 		}
 		return res.TokenizedText, nil
 	})
-	regMetrics := metrics.NewRegistry(time.Minute)
+	regMetrics := metrics.New(metrics.Options{})
 	cfg := config.Config{LLM: config.LLMConfig{Timeout: config.DefaultLLMTimeout}}
 	handler, err := buildRouter(cfg, pipe, handlers, op, regMetrics)
 	if err != nil {

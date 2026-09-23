@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/klrushka/llm-proxy/internal/audit"
-	"github.com/klrushka/llm-proxy/internal/metrics"
 	"github.com/klrushka/llm-proxy/internal/process"
 )
 
@@ -35,14 +34,10 @@ func WithProcessAudit(logger *audit.Logger) Option {
 	return func(o *options) { o.processAudit = logger }
 }
 
-// registerProcessRoute registers the POST /process route on mux. When reg is
-// non-nil the operation is wrapped to record safe latency and token-count
-// aggregates for the metrics endpoint. When logger is non-nil the operation is
-// wrapped to emit one safe structured audit event per request.
-func registerProcessRoute(mux *http.ServeMux, fn ProcessFunc, reg *metrics.Registry, logger *audit.Logger) {
-	if reg != nil && fn != nil {
-		fn = recordProcess(reg, fn)
-	}
+// registerProcessRoute registers the POST /process route on mux. When logger is
+// non-nil the operation is wrapped to emit one safe structured audit event per
+// request.
+func registerProcessRoute(mux *http.ServeMux, fn ProcessFunc, logger *audit.Logger) {
 	if logger != nil && fn != nil {
 		fn = auditProcess(logger, fn)
 	}
@@ -67,19 +62,6 @@ func auditProcess(logger *audit.Logger, fn ProcessFunc) ProcessFunc {
 			Duration:  time.Since(start),
 			Result:    result,
 		})
-		return resp, err
-	}
-}
-
-// recordProcess wraps fn to record one safe observation per request. It
-// measures the operation duration and counts the tokens in the request payload
-// as a numeric aggregate. It never records the payload, the result, a token
-// value or any other plaintext.
-func recordProcess(reg *metrics.Registry, fn ProcessFunc) ProcessFunc {
-	return func(ctx context.Context, req process.Request) (process.Response, error) {
-		start := time.Now()
-		resp, err := fn(ctx, req)
-		reg.Record(time.Since(start), metrics.CountTokens(req.Payload))
 		return resp, err
 	}
 }

@@ -23,7 +23,7 @@ type options struct {
 	pii          PIIHandlers
 	process      ProcessFunc
 	runtime      RuntimeFunc
-	metrics      *metrics.Registry
+	metrics      *metrics.Metrics
 	processAudit *audit.Logger
 }
 
@@ -34,11 +34,10 @@ func WithPIIHandlers(h PIIHandlers) Option {
 	return func(o *options) { o.pii = h }
 }
 
-// WithMetrics wires a metrics.Registry into the router. The registry's handler
-// serves GET /metrics and the POST /process operation is instrumented to record
-// safe latency and token-count aggregates. When provided it takes precedence
-// over the positional metrics handler argument.
-func WithMetrics(reg *metrics.Registry) Option {
+// WithMetrics wires metrics into the router. Their handler serves GET /metrics.
+// When provided it takes precedence over the positional metrics handler
+// argument.
+func WithMetrics(reg *metrics.Metrics) Option {
 	return func(o *options) { o.metrics = reg }
 }
 
@@ -61,7 +60,7 @@ func NewRouter(ready ReadyFunc, metricsHandler http.Handler, opts ...Option) *ht
 		mux.Handle("GET /metrics", handleMetrics(metricsHandler))
 	}
 	registerPIIRoutes(mux, o.pii)
-	registerProcessRoute(mux, o.process, o.metrics, o.processAudit)
+	registerProcessRoute(mux, o.process, o.processAudit)
 	registerRuntimeRoute(mux, o.runtime)
 	return mux
 }
