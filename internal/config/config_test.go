@@ -21,8 +21,6 @@ func resetEnv(t *testing.T) {
 		EnvLLMModel,
 		EnvLLMAPIKey,
 		EnvLLMTimeout,
-		EnvAccessProfile,
-		EnvConsumersJSON,
 	} {
 		value, present := os.LookupEnv(name)
 		if err := os.Unsetenv(name); err != nil {
@@ -50,7 +48,6 @@ func validKey(t *testing.T) string {
 func TestLoadDefaults(t *testing.T) {
 	resetEnv(t)
 	t.Setenv(EnvVaultKey, validKey(t))
-	t.Setenv(EnvAccessProfile, AccessProfileChecker)
 
 	cfg, err := Load()
 	if err != nil {
@@ -89,7 +86,6 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv(EnvModelMode, ModelModeFast)
 	t.Setenv(EnvVaultKey, validKey(t))
 	t.Setenv(EnvModelClientTimeout, "45s")
-	t.Setenv(EnvAccessProfile, AccessProfileChecker)
 
 	cfg, err := Load()
 	if err != nil {
@@ -240,7 +236,6 @@ func TestMalformedKeyErrorDoesNotLeakValue(t *testing.T) {
 func TestLoadLLMDisabledByDefault(t *testing.T) {
 	resetEnv(t)
 	t.Setenv(EnvVaultKey, validKey(t))
-	t.Setenv(EnvAccessProfile, AccessProfileChecker)
 
 	cfg, err := Load()
 	if err != nil {
@@ -261,7 +256,6 @@ func TestLoadLLMCompleteGroup(t *testing.T) {
 	t.Setenv(EnvLLMModel, "test-model")
 	t.Setenv(EnvLLMAPIKey, "secret-key")
 	t.Setenv(EnvLLMTimeout, "45s")
-	t.Setenv(EnvAccessProfile, AccessProfileChecker)
 
 	cfg, err := Load()
 	if err != nil {

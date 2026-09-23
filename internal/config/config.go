@@ -50,8 +50,6 @@ type Config struct {
 	VaultKey           VaultKey
 	ModelClientTimeout time.Duration
 	LLM                LLMConfig
-	AccessProfile      string
-	Consumers          *Consumers
 }
 
 // LLMConfig holds the optional downstream LLM configuration. It is optional as
@@ -145,22 +143,6 @@ func Load() (Config, error) {
 	}
 	cfg.VaultKey = key
 
-	profile, ok := os.LookupEnv(EnvAccessProfile)
-	if !ok {
-		return Config{}, fmt.Errorf("%s: required", EnvAccessProfile)
-	}
-	cfg.AccessProfile = profile
-
-	if profile == AccessProfileProduction {
-		if rawConsumers, ok := os.LookupEnv(EnvConsumersJSON); ok {
-			consumers, err := parseConsumers(rawConsumers)
-			if err != nil {
-				return Config{}, err
-			}
-			cfg.Consumers = consumers
-		}
-	}
-
 	if err := cfg.validate(); err != nil {
 		return Config{}, err
 	}
@@ -199,28 +181,7 @@ func (c Config) validate() error {
 	if err := c.validateLLM(); err != nil {
 		return err
 	}
-	if err := c.validateAccess(); err != nil {
-		return err
-	}
 	return nil
-}
-
-// validateAccess validates the access-control profile and its consumers. The
-// checker profile must not require consumers JSON. The production profile
-// requires a parsed consumers list. Errors never reflect the JSON, a hash, an
-// API key or a system ID.
-func (c Config) validateAccess() error {
-	switch c.AccessProfile {
-	case AccessProfileChecker:
-		return nil
-	case AccessProfileProduction:
-		if c.Consumers == nil {
-			return fmt.Errorf("%s: required for %s profile", EnvConsumersJSON, AccessProfileProduction)
-		}
-		return nil
-	default:
-		return fmt.Errorf("%s: must be %q or %q", EnvAccessProfile, AccessProfileChecker, AccessProfileProduction)
-	}
 }
 
 // validateLLM validates the optional downstream LLM group. The group is
