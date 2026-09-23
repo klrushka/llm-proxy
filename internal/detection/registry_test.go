@@ -146,19 +146,25 @@ func TestExtraTypeRegistrationRejectsDuplicate(t *testing.T) {
 	}
 }
 
-func TestResolveModelLabelDirectCanonical(t *testing.T) {
+func TestResolveModelLabelRubertCanonical(t *testing.T) {
 	r, err := New()
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	for _, name := range expectedCanonicalTypes {
-		got, ok := r.ResolveModelLabel(SourceRubert, string(name))
-		if !ok || got != name {
-			t.Errorf("ResolveModelLabel(rubert, %q) = %q,%v, want %q,true", name, got, ok, name)
-		}
-		got, ok = r.ResolveModelLabel(SourceGliner, string(name))
-		if !ok || got != name {
-			t.Errorf("ResolveModelLabel(gliner, %q) = %q,%v, want %q,true", name, got, ok, name)
+	tests := []struct {
+		label string
+		want  Type
+	}{
+		{"FIRST_NAME", TypeFirstName},
+		{"LAST_NAME", TypeLastName},
+		{"MIDDLE_NAME", TypeMiddleName},
+		{"EMAIL", TypeEmail},
+		{"PHONE", TypePhone},
+	}
+	for _, tt := range tests {
+		got, ok := r.ResolveModelLabel(SourceRubert, tt.label)
+		if !ok || got != tt.want {
+			t.Errorf("ResolveModelLabel(rubert, %q) = %q,%v, want %q,true", tt.label, got, ok, tt.want)
 		}
 	}
 }
@@ -184,19 +190,65 @@ func TestResolveModelLabelGlinerAliases(t *testing.T) {
 	}
 }
 
+func TestResolveModelLabelGlinerIntermediate(t *testing.T) {
+	r, err := New()
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	tests := []struct {
+		label string
+		want  Type
+	}{
+		{"ru_pii_location", TypeLocation},
+		{"ru_pii_date", TypeDate},
+	}
+	for _, tt := range tests {
+		got, ok := r.ResolveModelLabel(SourceGliner, tt.label)
+		if !ok || got != tt.want {
+			t.Errorf("ResolveModelLabel(gliner, %q) = %q,%v, want %q,true", tt.label, got, ok, tt.want)
+		}
+	}
+}
+
+func TestResolveModelLabelRubertAddressLabels(t *testing.T) {
+	r, err := New()
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	tests := []struct {
+		label string
+		want  Type
+	}{
+		{"COUNTRY", TypeAddressCountry},
+		{"REGION", TypeAddressRegion},
+		{"DISTRICT", TypeAddressRegion},
+		{"CITY", TypeAddressCity},
+		{"STREET", TypeAddressStreet},
+		{"HOUSE", TypeAddressHouse},
+	}
+	for _, tt := range tests {
+		got, ok := r.ResolveModelLabel(SourceRubert, tt.label)
+		if !ok || got != tt.want {
+			t.Errorf("ResolveModelLabel(rubert, %q) = %q,%v, want %q,true", tt.label, got, ok, tt.want)
+		}
+	}
+}
+
 func TestResolveModelLabelRejectsIntermediateAndUnknown(t *testing.T) {
 	r, err := New()
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
 	rejected := []string{
-		"ru_pii_location",
-		"ru_pii_date",
 		"ru_pii",
 		"DATE",
 		"LOCATION",
 		"BOGUS",
 		"",
+		"PASSPORT",
+		"INN",
+		"CREDIT_CARD",
+		"DRIVER_LICENSE",
 	}
 	for _, label := range rejected {
 		if got, ok := r.ResolveModelLabel(SourceGliner, label); ok {
@@ -204,6 +256,33 @@ func TestResolveModelLabelRejectsIntermediateAndUnknown(t *testing.T) {
 		}
 		if got, ok := r.ResolveModelLabel(SourceRubert, label); ok {
 			t.Errorf("ResolveModelLabel(rubert, %q) = %q,true, want false", label, got)
+		}
+	}
+}
+
+// TestResolveModelLabelRejectsCrossSourceCanonical proves that a canonical
+// label from a source that does not emit it is rejected fail-closed, and that
+// structural canonical aliases never resolve directly.
+func TestResolveModelLabelRejectsCrossSourceCanonical(t *testing.T) {
+	r, err := New()
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	// RuBERT does not emit FULL_NAME; GLiNER does not emit FIRST_NAME.
+	if got, ok := r.ResolveModelLabel(SourceRubert, "FULL_NAME"); ok {
+		t.Errorf("ResolveModelLabel(rubert, FULL_NAME) = %q,true, want false", got)
+	}
+	if got, ok := r.ResolveModelLabel(SourceGliner, "FIRST_NAME"); ok {
+		t.Errorf("ResolveModelLabel(gliner, FIRST_NAME) = %q,true, want false", got)
+	}
+	// Structural canonical aliases must never resolve directly for either
+	// source; they require Go validation.
+	for _, label := range []string{"PASSPORT_NUMBER", "INN_PERSON", "BANK_CARD_NUMBER", "DRIVER_LICENSE_NUMBER"} {
+		if got, ok := r.ResolveModelLabel(SourceRubert, label); ok {
+			t.Errorf("ResolveModelLabel(rubert, %q) = %q,true, want false", label, got)
+		}
+		if got, ok := r.ResolveModelLabel(SourceGliner, label); ok {
+			t.Errorf("ResolveModelLabel(gliner, %q) = %q,true, want false", label, got)
 		}
 	}
 }

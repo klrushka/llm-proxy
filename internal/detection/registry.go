@@ -47,6 +47,14 @@ const (
 	TypeCardholderName       Type = "CARDHOLDER_NAME"
 )
 
+// Intermediate, non-canonical candidate types produced by model-label
+// resolution and consumed by contextual classification. They are deliberately
+// not part of the 28 canonical registry/defaultTypes.
+const (
+	TypeDate     Type = "DATE"
+	TypeLocation Type = "LOCATION"
+)
+
 // defaultTypes is the authoritative set of the 28 canonical types.
 var defaultTypes = []Type{
 	TypeFullName,
@@ -151,25 +159,53 @@ func (r *Registry) Types() []Type {
 	return out
 }
 
-// ResolveModelLabel maps a model label to a canonical Type. An already
-// canonical label resolves to itself for any known source. GLiNER aliases
-// ru_pii_person, ru_pii_phone and ru_pii_email to their canonical types.
-// Noncanonical, general and unknown labels, and unknown sources, return
-// ok=false. Intermediate labels such as DATE, LOCATION and generic ru_pii are
-// left unresolved for the later contextual-classification task.
+// ResolveModelLabel maps a model label to a Type for a specific model source.
+// The contract is strictly source-specific: each source resolves only the
+// labels it actually emits, and a canonical label from a source that does not
+// emit it is rejected fail-closed.
+//
+// RuBERT resolves its real canonical labels (FIRST_NAME, LAST_NAME,
+// MIDDLE_NAME, EMAIL, PHONE), its address labels (COUNTRY, REGION, DISTRICT,
+// CITY, STREET, HOUSE) to canonical address component types, and leaves its
+// structural labels (PASSPORT, INN, CREDIT_CARD, DRIVER_LICENSE) unresolved
+// here because they require Go validation of the value and are confirmed by the
+// model boundary instead.
+//
+// GLiNER resolves its ru_pii_* aliases: ru_pii_person, ru_pii_phone and
+// ru_pii_email to their canonical types, and ru_pii_location and ru_pii_date to
+// the intermediate LOCATION and DATE types consumed by contextual
+// classification. The generic ru_pii label is rejected.
+//
+// Unknown labels, cross-source canonical labels, structural canonical aliases
+// and unknown sources return ok=false.
 func (r *Registry) ResolveModelLabel(model Source, label string) (Type, bool) {
 	switch model {
-	case SourceRubert, SourceGliner:
-	default:
-		return "", false
-	}
-
-	t := Type(label)
-	if r.Lookup(t) {
-		return t, true
-	}
-
-	if model == SourceGliner {
+	case SourceRubert:
+		switch label {
+		case "FIRST_NAME":
+			return TypeFirstName, true
+		case "LAST_NAME":
+			return TypeLastName, true
+		case "MIDDLE_NAME":
+			return TypeMiddleName, true
+		case "EMAIL":
+			return TypeEmail, true
+		case "PHONE":
+			return TypePhone, true
+		case "COUNTRY":
+			return TypeAddressCountry, true
+		case "REGION":
+			return TypeAddressRegion, true
+		case "DISTRICT":
+			return TypeAddressRegion, true
+		case "CITY":
+			return TypeAddressCity, true
+		case "STREET":
+			return TypeAddressStreet, true
+		case "HOUSE":
+			return TypeAddressHouse, true
+		}
+	case SourceGliner:
 		switch label {
 		case "ru_pii_person":
 			return TypeFullName, true
@@ -177,6 +213,10 @@ func (r *Registry) ResolveModelLabel(model Source, label string) (Type, bool) {
 			return TypePhone, true
 		case "ru_pii_email":
 			return TypeEmail, true
+		case "ru_pii_location":
+			return TypeLocation, true
+		case "ru_pii_date":
+			return TypeDate, true
 		}
 	}
 	return "", false
