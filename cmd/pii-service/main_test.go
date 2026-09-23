@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -19,6 +20,7 @@ import (
 	"github.com/klrushka/llm-proxy/internal/audit"
 	"github.com/klrushka/llm-proxy/internal/config"
 	"github.com/klrushka/llm-proxy/internal/contextual"
+	"github.com/klrushka/llm-proxy/internal/debughttp"
 	"github.com/klrushka/llm-proxy/internal/detection"
 	"github.com/klrushka/llm-proxy/internal/metrics"
 	"github.com/klrushka/llm-proxy/internal/modelclient"
@@ -1345,6 +1347,40 @@ func newInstrumentedHandler(t *testing.T, admissionLimit int) (http.Handler, *me
 	}
 	m := metrics.New(metrics.Options{})
 	return composeHandler(cfg, audit.New(io.Discard), mux, m, admissionLimit), m
+}
+
+func TestComposeHandlerWritesPublicBodiesToDebugLog(t *testing.T) {
+	pipe, handlers := newTestPipeline(t)
+	op := process.NewOperation(process.NewStore(), func(ctx context.Context, payload string) (string, error) {
+		res, err := handlers.Tokenize(ctx, api.TokenizeRequest{Text: payload, ScopeID: processScope})
+		return res.TokenizedText, err
+	})
+	cfg := config.Config{LLM: config.LLMConfig{Timeout: config.DefaultLLMTimeout}}
+	mux, err := buildRouter(cfg, pipe, handlers, op, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var log bytes.Buffer
+	h := composeHandler(cfg, audit.New(io.Discard), mux, metrics.New(metrics.Options{}), maxConcurrentRequests, debughttp.New(&log))
+	body := `{"text":"debug@example.com","scope_id":"debug-scope"}`
+	if rec := doJSON(t, h, http.MethodPost, "/v1/pii/tokenize", body, map[string]string{"Authorization": "Bearer secret"}); rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var event struct {
+		Route       string `json:"route"`
+		RequestBody string `json:"request_body"`
+	}
+	if err := json.Unmarshal(log.Bytes(), &event); err != nil || event.Route != "/v1/pii/tokenize" || event.RequestBody != body {
+		t.Fatalf("debug event = %+v, err = %v", event, err)
+	}
+	if strings.Contains(log.String(), "Bearer secret") {
+		t.Fatalf("debug log contains authorization: %s", log.String())
+	}
+	before := log.Len()
+	_ = doJSON(t, h, http.MethodGet, "/health/live", "", nil)
+	if log.Len() != before {
+		t.Fatal("health request was logged")
+	}
 }
 
 // scrapeMetrics returns the metrics exposition of m.

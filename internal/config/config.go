@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -24,6 +25,7 @@ const (
 	EnvLLMModel             = EnvPrefix + "LLM_MODEL"
 	EnvLLMAPIKey            = EnvPrefix + "LLM_API_KEY"
 	EnvLLMTimeout           = EnvPrefix + "LLM_TIMEOUT"
+	EnvLogLevel             = EnvPrefix + "LOG_LEVEL"
 )
 
 // Defaults.
@@ -35,12 +37,15 @@ const (
 	DefaultModelMode            = ModelModeFull
 	DefaultModelClientTimeout   = 30 * time.Second
 	DefaultLLMTimeout           = 60 * time.Second
+	DefaultLogLevel             = LogLevelInfo
 )
 
 // Model modes.
 const (
 	ModelModeFull = "full"
 	ModelModeFast = "fast"
+	LogLevelInfo  = "info"
+	LogLevelDebug = "debug"
 )
 
 // Config holds the resolved service configuration.
@@ -56,6 +61,7 @@ type Config struct {
 	VaultKey             VaultKey
 	ModelClientTimeout   time.Duration
 	LLM                  LLMConfig
+	LogLevel             string
 }
 
 // LLMConfig holds the optional downstream LLM configuration. It is optional as
@@ -94,6 +100,7 @@ func Load() (Config, error) {
 		VaultTTL:             DefaultVaultTTL,
 		ModelMode:            DefaultModelMode,
 		ModelClientTimeout:   DefaultModelClientTimeout,
+		LogLevel:             DefaultLogLevel,
 		LLM: LLMConfig{
 			Timeout: DefaultLLMTimeout,
 		},
@@ -141,6 +148,9 @@ func Load() (Config, error) {
 			return Config{}, fmt.Errorf("%s: invalid duration: %w", EnvLLMTimeout, err)
 		}
 		cfg.LLM.Timeout = d
+	}
+	if v, ok := os.LookupEnv(EnvLogLevel); ok {
+		cfg.LogLevel = strings.ToLower(v)
 	}
 
 	rawKey, ok := os.LookupEnv(EnvVaultKey)
@@ -196,6 +206,9 @@ func (c Config) validate() error {
 	}
 	if err := c.validateLLM(); err != nil {
 		return err
+	}
+	if c.LogLevel != LogLevelInfo && c.LogLevel != LogLevelDebug {
+		return fmt.Errorf("%s: must be %q or %q", EnvLogLevel, LogLevelInfo, LogLevelDebug)
 	}
 	return nil
 }

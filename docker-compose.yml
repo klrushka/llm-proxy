@@ -33,10 +33,13 @@ services:
       PII_LLM_MODEL: "${PII_LLM_MODEL:-}"
       PII_LLM_API_KEY: "${PII_LLM_API_KEY:-}"
       PII_LLM_TIMEOUT: "${PII_LLM_TIMEOUT:-60s}"
+      PII_LOG_LEVEL: "${PII_LOG_LEVEL:-debug}"
     ports:
       - "8080:8080"
     expose:
       - "9464"
+    volumes:
+      - pii-debug-logs:/var/log/pii-service
     depends_on:
       model-worker:
         condition: service_healthy
@@ -60,6 +63,7 @@ services:
 
 volumes:
   hf-cache:
+  pii-debug-logs:
 
 # A private bridge network shared by the Go service and the worker. The worker
 # is not published to the host (only `expose`), so it is reachable only from

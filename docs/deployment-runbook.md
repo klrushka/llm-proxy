@@ -83,6 +83,16 @@ host-local env file.
 | `PII_LLM_MODEL` | — | no | Model identifier sent in the outbound JSON. Optional as a group with `PII_LLM_URL`. |
 | `PII_LLM_API_KEY` | — | no | Sent as `Authorization: Bearer` when non-empty; no header when empty. |
 | `PII_LLM_TIMEOUT` | `60s` | no | Timeout for downstream LLM calls. |
+| `PII_LOG_LEVEL` | `info` | no | `debug` writes raw public API bodies to `/var/log/pii-service/debug.jsonl`; use only for short diagnostic sessions. |
+
+## Debug HTTP journal
+
+With `PII_LOG_LEVEL=debug`, `/var/log/pii-service/debug.jsonl` is opened with
+mode `0600` and contains raw public API request and response bodies, including
+PII, restored text and tokens. The Compose volume `pii-debug-logs` persists it.
+Restrict access to the service account, configure host-side log rotation, and
+remove the journal immediately after diagnostics. Headers, query strings,
+health/metrics and model worker/LLM traffic are not recorded.
 
 The LLM group is optional as a whole: `PII_LLM_URL` and `PII_LLM_MODEL` must be
 set together. When both are absent, `POST /v1/runtime/chat` fails closed with

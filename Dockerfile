@@ -21,7 +21,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/pii-ser
 # healthcheck and a shell for the entrypoint.
 FROM alpine:3.20
 
-RUN addgroup -S -g 10001 pii && adduser -S -D -H -u 10001 -G pii pii
+RUN addgroup -S -g 10001 pii && adduser -S -D -H -u 10001 -G pii pii \
+    && install -d -o pii -g pii -m 700 /var/log/pii-service
 
 COPY --from=build /out/pii-service /usr/local/bin/pii-service
 

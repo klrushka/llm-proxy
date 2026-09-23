@@ -89,6 +89,14 @@ PII_MODEL_MODE=fast go run ./cmd/pii-service
 | `PII_LLM_MODEL` | — (опц.) | Идентификатор модели в исходящем JSON |
 | `PII_LLM_API_KEY` | — (опц.) | Ключ для `Authorization: Bearer` (пустой — заголовок не шлётся) |
 | `PII_LLM_TIMEOUT` | `60s` | Таймаут вызова downstream LLM |
+| `PII_LOG_LEVEL` | `info` | `info` или `debug`; `debug` сохраняет raw bodies публичного API в `/var/log/pii-service/debug.jsonl` |
+
+При `PII_LOG_LEVEL=debug` файл `/var/log/pii-service/debug.jsonl` создаётся с
+правами `0600`. Он содержит PII, исходный и восстановленный текст, а также
+токены из публичных request/response bodies. Включайте этот режим только на
+время диагностики, защищайте Docker volume, настраивайте внешнюю ротацию и
+удаляйте файл после работы. Заголовки, health/metrics и обмен с model worker
+или LLM в этот файл не попадают.
 
 LLM-конфигурация опциональна как полная группа: `PII_LLM_URL` и
 `PII_LLM_MODEL` задаются вместе. Если обе отсутствуют, `POST /v1/runtime/chat`

@@ -22,6 +22,7 @@ func resetEnv(t *testing.T) {
 		EnvLLMModel,
 		EnvLLMAPIKey,
 		EnvLLMTimeout,
+		EnvLogLevel,
 	} {
 		value, present := os.LookupEnv(name)
 		if err := os.Unsetenv(name); err != nil {
@@ -72,6 +73,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.ModelClientTimeout != DefaultModelClientTimeout {
 		t.Errorf("ModelClientTimeout = %v, want %v", cfg.ModelClientTimeout, DefaultModelClientTimeout)
 	}
+	if cfg.LogLevel != DefaultLogLevel {
+		t.Errorf("LogLevel = %q, want %q", cfg.LogLevel, DefaultLogLevel)
+	}
 
 	want := make([]byte, 32)
 	for i := range want {
@@ -79,6 +83,34 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if got := cfg.VaultKey.Bytes(); got != [32]byte(want) {
 		t.Errorf("VaultKey bytes mismatch")
+	}
+}
+
+func TestLoadLogLevel(t *testing.T) {
+	resetEnv(t)
+	t.Setenv(EnvVaultKey, validKey(t))
+	t.Setenv(EnvLogLevel, "DEBUG")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.LogLevel != LogLevelDebug {
+		t.Errorf("LogLevel = %q, want %q", cfg.LogLevel, LogLevelDebug)
+	}
+}
+
+func TestLoadRejectsInvalidLogLevel(t *testing.T) {
+	resetEnv(t)
+	t.Setenv(EnvVaultKey, validKey(t))
+	t.Setenv(EnvLogLevel, "trace-with-secret")
+
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), EnvLogLevel) {
+		t.Fatalf("Load() error = %v, want %s error", err, EnvLogLevel)
+	}
+	if strings.Contains(err.Error(), "trace-with-secret") {
+		t.Fatalf("Load() error leaks value: %q", err)
 	}
 }
 

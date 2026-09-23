@@ -25,6 +25,7 @@ import (
 	"github.com/klrushka/llm-proxy/internal/api"
 	"github.com/klrushka/llm-proxy/internal/audit"
 	"github.com/klrushka/llm-proxy/internal/config"
+	"github.com/klrushka/llm-proxy/internal/debughttp"
 	"github.com/klrushka/llm-proxy/internal/detection"
 	"github.com/klrushka/llm-proxy/internal/llmclient"
 	"github.com/klrushka/llm-proxy/internal/metrics"
@@ -74,6 +75,15 @@ func run() error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
+	}
+	var debugLogger *debughttp.Logger
+	if cfg.LogLevel == config.LogLevelDebug {
+		file, err := debughttp.Open(debughttp.FilePath)
+		if err != nil {
+			return fmt.Errorf("debug log: %w", err)
+		}
+		defer file.Close()
+		debugLogger = debughttp.New(file)
 	}
 
 	// Encrypted volatile vault. It stores only AES-256-GCM ciphertext of the
@@ -141,7 +151,7 @@ func run() error {
 	// safe event, including requests rejected while the service is overloaded.
 	// The metrics middleware sits inside audit, so it can read the request's
 	// audit collector, and outside admission, so 429 responses are measured.
-	auditHandler := composeHandler(cfg, logger, handler, regMetrics, maxConcurrentRequests)
+	auditHandler := composeHandler(cfg, logger, handler, regMetrics, maxConcurrentRequests, debugLogger)
 
 	// Runtime executes model protection and the downstream LLM sequentially.
 	// Keep the socket write deadline above both configured upstream budgets so
@@ -206,10 +216,16 @@ func newServer(addr string, handler http.Handler, writeTimeout time.Duration) *h
 
 // composeHandler builds the public API middleware chain:
 // audit -> metrics -> admission -> router.
-func composeHandler(cfg config.Config, logger *audit.Logger, mux *http.ServeMux, m *metrics.Metrics, admissionLimit int) http.Handler {
+func composeHandler(cfg config.Config, logger *audit.Logger, mux *http.ServeMux, m *metrics.Metrics, admissionLimit int, debugLoggers ...*debughttp.Logger) http.Handler {
 	admission := newAdmissionMiddleware(admissionLimit)
 	instrument := m.Middleware(routeTemplate(mux))
-	return audit.Middleware(logger, audit.ModelMode(cfg.ModelMode))(instrument(admission(mux)))
+	handler := http.Handler(mux)
+	if len(debugLoggers) > 0 && debugLoggers[0] != nil {
+		handler = debugLoggers[0].Middleware(routeTemplate(mux), func() {
+			fmt.Fprintln(os.Stderr, "pii-service: debug log write failed")
+		})(handler)
+	}
+	return audit.Middleware(logger, audit.ModelMode(cfg.ModelMode))(instrument(admission(handler)))
 }
 
 // routeTemplate returns the metrics route resolver for mux. It reports the

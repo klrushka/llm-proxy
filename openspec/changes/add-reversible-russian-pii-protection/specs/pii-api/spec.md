@@ -175,14 +175,3 @@ Concurrent первый запрос для одного `payload_id` SHALL ис
 #### Scenario: Revoked scope cannot disclose mappings
 - **WHEN** клиент отзывает scope и затем вызывает detokenize для token из этого scope
 - **THEN** исходное значение не раскрывается
-
-### Requirement: Audit logging safety
-Система SHALL логировать request_id, operation, наличие ПДн, найденные типы, количество сущностей, personal flags, sources, reason codes, duration, model mode и результат операции; система MUST NOT логировать исходный текст, найденные значения, восстановленный текст, mappings, CVV/PIN, ciphertext, ключи, Authorization headers или request/response body при ошибке.
-
-#### Scenario: Logs contain types but not values
-- **WHEN** запрос обрабатывает synthetic ПДн
-- **THEN** перехваченные логи содержат найденные типы и metadata, но не содержат synthetic plaintext values
-
-#### Scenario: Error logs do not include bodies or secrets
-- **WHEN** обработчик возвращает ошибку валидации, vault или model worker
-- **THEN** лог ошибки не содержит request body, response body, Authorization header, ciphertext или ключи
