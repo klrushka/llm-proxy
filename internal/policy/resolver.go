@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"context"
 	"errors"
 	"strings"
 )
@@ -51,4 +52,42 @@ func (r *Resolver) Resolve(identity string) (Policy, error) {
 		return Policy{}, ErrUnknownConsumer
 	}
 	return p.clone(), nil
+}
+
+// ResolveRegistered is the strict resolution path used by the access-control
+// layer. Unlike Resolve it never applies a default fallback: a blank or
+// whitespace-only identity, the benchmark/default identity, and any unknown
+// identity all fail closed with the exact bare ErrUnknownConsumer. Only a
+// registered non-empty identity resolves to a deep copy of its policy.
+func (r *Resolver) ResolveRegistered(identity string) (Policy, error) {
+	if strings.TrimSpace(identity) == "" || identity == DefaultConsumerID {
+		return Policy{}, ErrUnknownConsumer
+	}
+	p, ok := r.byID[identity]
+	if !ok {
+		return Policy{}, ErrUnknownConsumer
+	}
+	return p.clone(), nil
+}
+
+// policyContextKey is a private, unexported context key type. Using a private
+// type prevents any other package from colliding with or reading the stored
+// policy through a guessed key.
+type policyContextKey struct{}
+
+// WithPolicy returns a context carrying a deep copy of p. Downstream handlers
+// can retrieve it with PolicyFromContext without reading user headers.
+func WithPolicy(ctx context.Context, p Policy) context.Context {
+	return context.WithValue(ctx, policyContextKey{}, p.clone())
+}
+
+// PolicyFromContext returns the policy stored by WithPolicy and whether it was
+// present. The returned Policy is a defensive deep copy, so caller mutation of
+// exported capability fields cannot affect the stored value or future reads.
+func PolicyFromContext(ctx context.Context) (Policy, bool) {
+	p, ok := ctx.Value(policyContextKey{}).(Policy)
+	if !ok {
+		return Policy{}, false
+	}
+	return p.clone(), true
 }

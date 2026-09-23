@@ -22,6 +22,12 @@ services:
       PII_MODEL_MODE: "${PII_MODEL_MODE:-full}"
       PII_VAULT_TTL: "${PII_VAULT_TTL:-15m}"
       PII_MODEL_CLIENT_TIMEOUT: "${PII_MODEL_CLIENT_TIMEOUT:-30s}"
+      # Access profile. The checker profile is the compatible default: it opens
+      # health and POST /process with the full benchmark type set and closes
+      # every other route. Set PII_ACCESS_PROFILE=production to require a
+      # registered API key on all non-health routes.
+      PII_ACCESS_PROFILE: "${PII_ACCESS_PROFILE:-checker}"
+      PII_CONSUMERS_JSON: "${PII_CONSUMERS_JSON:-}"
       # Optional downstream LLM group. When both PII_LLM_URL and PII_LLM_MODEL
       # are set, POST /v1/runtime/chat runs the full mask -> LLM -> demask flow.
       # When both are absent the route stays fail-closed with 503 so /process
