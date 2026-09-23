@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/klrushka/llm-proxy/internal/process"
 )
@@ -30,6 +31,20 @@ func countingMask(calls *atomic.Int64) process.MaskFunc {
 	return func(_ context.Context, payload string) (string, error) {
 		calls.Add(1)
 		return "masked:" + payload, nil
+	}
+}
+
+func TestProcessStoreCapacityReturnsSafe503(t *testing.T) {
+	store := process.NewStoreWithLimits(time.Minute, 1, 64)
+	op := process.NewOperation(store, func(context.Context, string) (string, error) { return "masked", nil })
+	mux := NewRouter(nil, WithProcess(op.Handle))
+	first := doProcessRequest(mux, `{"payload":"synthetic","payload_id":"first"}`)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status = %d", first.Code)
+	}
+	full := doProcessRequest(mux, `{"payload":"private synthetic","payload_id":"second"}`)
+	if full.Code != http.StatusServiceUnavailable || strings.Contains(full.Body.String(), "private synthetic") || strings.Contains(full.Body.String(), "result") {
+		t.Fatalf("capacity response: status=%d body=%q", full.Code, full.Body.String())
 	}
 }
 

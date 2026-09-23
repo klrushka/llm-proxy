@@ -1,9 +1,11 @@
 package process
 
 import (
+	"container/list"
 	"context"
 	"errors"
 	"sync"
+	"time"
 )
 
 // Sentinel errors returned by the record state machine.
@@ -14,6 +16,14 @@ var (
 	ErrExists = errors.New("process: record already exists")
 	// ErrInvalidTransition is returned when a state transition is not allowed.
 	ErrInvalidTransition = errors.New("process: invalid state transition")
+	ErrStoreCapacity     = errors.New("process: record store capacity reached")
+)
+
+const (
+	defaultRetention  = 5 * time.Minute
+	defaultMaxRecords = 100000
+	defaultMaxBytes   = 64 << 20
+	maxPrunePerCall   = 64
 )
 
 // Record is a correlation record for a payload_id. It carries the data needed
@@ -42,8 +52,13 @@ func CanTransition(from, to RecordState) bool {
 
 // Store is an in-memory record state machine keyed by payload_id.
 type Store struct {
-	mu      sync.Mutex
-	records map[string]*entry
+	mu                   sync.Mutex
+	records              map[string]*entry
+	bytes                int
+	retention            time.Duration
+	maxRecords, maxBytes int
+	now                  func() time.Time
+	completed            list.List
 }
 
 // entry is the private per-attempt store entry. It pairs the domain Record
@@ -53,14 +68,80 @@ type Store struct {
 // holds the safe classification of a failed claim so waiters and later retries
 // observe the same terminal failure; it is never exposed through Record.
 type entry struct {
-	rec     *Record
-	done    chan struct{}
-	failErr error
+	rec       *Record
+	done      chan struct{}
+	failErr   error
+	expiresAt time.Time
+	completed *list.Element
 }
 
 // NewStore returns an empty Store.
 func NewStore() *Store {
-	return &Store{records: make(map[string]*entry)}
+	return NewStoreWithLimits(defaultRetention, defaultMaxRecords, defaultMaxBytes)
+}
+
+// NewStoreWithLimits bounds completed records and stored string data. Claims
+// remain pinned until they finish. Non-positive limits use safe defaults.
+func NewStoreWithLimits(retention time.Duration, maxRecords, maxBytes int) *Store {
+	if retention <= 0 {
+		retention = defaultRetention
+	}
+	if maxRecords <= 0 {
+		maxRecords = defaultMaxRecords
+	}
+	if maxBytes <= 0 {
+		maxBytes = defaultMaxBytes
+	}
+	return &Store{records: make(map[string]*entry), retention: retention, maxRecords: maxRecords, maxBytes: maxBytes, now: time.Now}
+}
+
+func recordBytes(e *entry) int {
+	return len(e.rec.PayloadID) + len(e.rec.Original) + len(e.rec.Result)
+}
+
+func (s *Store) removeLocked(e *entry) {
+	if s.records[e.rec.PayloadID] != e {
+		return
+	}
+	delete(s.records, e.rec.PayloadID)
+	s.bytes -= recordBytes(e)
+	if e.completed != nil {
+		s.completed.Remove(e.completed)
+		e.completed = nil
+	}
+}
+
+// Completion timestamps are monotonic under the lock. Sweep a fixed budget
+// so one request cannot inherit an unbounded expiry drain.
+func (s *Store) pruneLocked() {
+	now := s.now()
+	for n := 0; n < maxPrunePerCall; n++ {
+		front := s.completed.Front()
+		if front == nil {
+			return
+		}
+		e := front.Value.(*entry)
+		if now.Before(e.expiresAt) {
+			return
+		}
+		s.removeLocked(e)
+	}
+}
+
+func (s *Store) lookupLocked(id string) *entry {
+	e := s.records[id]
+	if e != nil && !e.expiresAt.IsZero() && !s.now().Before(e.expiresAt) {
+		s.removeLocked(e)
+		return nil
+	}
+	return e
+}
+
+func (s *Store) finishedLocked(e *entry) {
+	if e.expiresAt.IsZero() {
+		e.expiresAt = s.now().Add(s.retention)
+		e.completed = s.completed.PushBack(e)
+	}
 }
 
 // begin binds one operation to an exact entry generation. A transient failed
@@ -70,17 +151,24 @@ func NewStore() *Store {
 func (s *Store) begin(payloadID, original string) (*entry, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	e, ok := s.records[payloadID]
-	if ok {
+	s.pruneLocked()
+	e := s.lookupLocked(payloadID)
+	if e != nil {
 		if e.rec.State == StateExpired && original != e.rec.Original {
 			return nil, false, ErrConflict
 		}
-		if e.rec.State != StateExpired || e.failErr != ErrModelUnavailable {
+		if e.rec.State != StateExpired || (e.failErr != ErrModelUnavailable && e.failErr != ErrStoreCapacity) {
 			return e, false, nil
 		}
+		s.removeLocked(e)
+	}
+	size := len(payloadID) + len(original)
+	if len(s.records) >= s.maxRecords || size > s.maxBytes-s.bytes {
+		return nil, false, ErrStoreCapacity
 	}
 	e = &entry{rec: &Record{PayloadID: payloadID, State: StateClaim, Original: original}, done: make(chan struct{})}
 	s.records[payloadID] = e
+	s.bytes += size
 	return e, true, nil
 }
 
@@ -111,8 +199,17 @@ func (s *Store) completeEntry(e *entry, result string) error {
 	if s.records[e.rec.PayloadID] != e || e.rec.State != StateClaim {
 		return ErrInvalidTransition
 	}
+	if len(result) > s.maxBytes-s.bytes {
+		e.failErr = ErrStoreCapacity
+		e.rec.State = StateExpired
+		s.finishedLocked(e)
+		close(e.done)
+		return ErrStoreCapacity
+	}
 	e.rec.Result = result
+	s.bytes += len(result)
 	e.rec.State = StateReady
+	s.finishedLocked(e)
 	close(e.done)
 	return nil
 }
@@ -125,6 +222,7 @@ func (s *Store) failEntry(e *entry, failErr error) error {
 	}
 	e.failErr = failErr
 	e.rec.State = StateExpired
+	s.finishedLocked(e)
 	close(e.done)
 	return nil
 }
@@ -135,8 +233,13 @@ func (s *Store) failEntry(e *entry, failErr error) error {
 func (s *Store) CreateClaim(payloadID, original string) (*Record, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.records[payloadID]; ok {
+	s.pruneLocked()
+	if s.lookupLocked(payloadID) != nil {
 		return nil, ErrExists
+	}
+	size := len(payloadID) + len(original)
+	if len(s.records) >= s.maxRecords || size > s.maxBytes-s.bytes {
+		return nil, ErrStoreCapacity
 	}
 	e := &entry{
 		rec: &Record{
@@ -147,6 +250,7 @@ func (s *Store) CreateClaim(payloadID, original string) (*Record, error) {
 		done: make(chan struct{}),
 	}
 	s.records[payloadID] = e
+	s.bytes += size
 	return e.rec.snapshot(), nil
 }
 
@@ -156,8 +260,9 @@ func (s *Store) CreateClaim(payloadID, original string) (*Record, error) {
 func (s *Store) Get(payloadID string) (*Record, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	e, ok := s.records[payloadID]
-	if !ok {
+	s.pruneLocked()
+	e := s.lookupLocked(payloadID)
+	if e == nil {
 		return nil, ErrNotFound
 	}
 	return e.rec.snapshot(), nil
@@ -172,8 +277,9 @@ func (s *Store) Get(payloadID string) (*Record, error) {
 // never exposes the coordination channel.
 func (s *Store) WaitReady(ctx context.Context, payloadID string) (*Record, error) {
 	s.mu.Lock()
-	e, ok := s.records[payloadID]
-	if !ok {
+	s.pruneLocked()
+	e := s.lookupLocked(payloadID)
+	if e == nil {
 		s.mu.Unlock()
 		return nil, ErrNotFound
 	}
@@ -194,10 +300,6 @@ func (s *Store) WaitReady(ctx context.Context, payloadID string) (*Record, error
 	// The record has left StateClaim; return a fresh detached snapshot.
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	e, ok = s.records[payloadID]
-	if !ok {
-		return nil, ErrNotFound
-	}
 	return e.rec.snapshot(), nil
 }
 
@@ -217,15 +319,25 @@ func (r *Record) snapshot() *Record {
 func (s *Store) CompleteClaim(payloadID, result string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	e, ok := s.records[payloadID]
-	if !ok {
+	s.pruneLocked()
+	e := s.lookupLocked(payloadID)
+	if e == nil {
 		return ErrNotFound
 	}
 	if e.rec.State != StateClaim {
 		return ErrInvalidTransition
 	}
+	if len(result) > s.maxBytes-s.bytes {
+		e.failErr = ErrStoreCapacity
+		e.rec.State = StateExpired
+		s.finishedLocked(e)
+		close(e.done)
+		return ErrStoreCapacity
+	}
 	e.rec.Result = result
+	s.bytes += len(result)
 	e.rec.State = StateReady
+	s.finishedLocked(e)
 	close(e.done)
 	return nil
 }
@@ -238,14 +350,16 @@ func (s *Store) CompleteClaim(payloadID, result string) error {
 func (s *Store) Transition(payloadID string, from, to RecordState) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	e, ok := s.records[payloadID]
-	if !ok {
+	s.pruneLocked()
+	e := s.lookupLocked(payloadID)
+	if e == nil {
 		return ErrNotFound
 	}
 	if e.rec.State != from || !CanTransition(from, to) {
 		return ErrInvalidTransition
 	}
 	e.rec.State = to
+	s.finishedLocked(e)
 	if from == StateClaim {
 		close(e.done)
 	}
@@ -262,8 +376,9 @@ func (s *Store) Transition(payloadID string, from, to RecordState) error {
 func (s *Store) expireClaim(payloadID string, failErr error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	e, ok := s.records[payloadID]
-	if !ok {
+	s.pruneLocked()
+	e := s.lookupLocked(payloadID)
+	if e == nil {
 		return ErrNotFound
 	}
 	if e.rec.State != StateClaim {
@@ -280,6 +395,7 @@ func (s *Store) expireClaim(payloadID string, failErr error) error {
 		e.failErr = ErrMaskingFailed
 	}
 	e.rec.State = StateExpired
+	s.finishedLocked(e)
 	close(e.done)
 	return nil
 }
@@ -291,8 +407,9 @@ func (s *Store) expireClaim(payloadID string, failErr error) error {
 func (s *Store) expiredFailure(payloadID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	e, ok := s.records[payloadID]
-	if !ok {
+	s.pruneLocked()
+	e := s.lookupLocked(payloadID)
+	if e == nil {
 		return ErrNotFound
 	}
 	if e.failErr == nil {

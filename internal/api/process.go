@@ -86,6 +86,10 @@ func handleProcess(fn ProcessFunc) http.HandlerFunc {
 		}
 		resp, err := fn(r.Context(), req)
 		if err != nil {
+			if errors.Is(err, process.ErrStoreCapacity) {
+				writeJSONError(w, http.StatusServiceUnavailable, "record store unavailable")
+				return
+			}
 			if errors.Is(err, process.ErrOverloaded) {
 				// Safe overload: generic body, no payload/result/internal detail.
 				w.Header().Set("Retry-After", "1")
