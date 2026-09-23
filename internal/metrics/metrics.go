@@ -7,7 +7,9 @@ package metrics
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
@@ -26,7 +28,24 @@ type Options struct {
 // collectors and the service metrics. A nil *Metrics is valid: every recording
 // method is a no-op, so optional wiring and tests need no guards.
 type Metrics struct {
-	reg *prometheus.Registry
+	reg            *prometheus.Registry
+	serverDuration *prometheus.HistogramVec
+	serverActive   *prometheus.GaugeVec
+	serverBodySize *prometheus.HistogramVec
+}
+
+// DurationBuckets are the OpenTelemetry-recommended HTTP duration buckets in
+// seconds, extended with 30s and 60s for downstream LLM calls.
+var DurationBuckets = []float64{0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10, 30, 60}
+
+// bodySizeBuckets cover request bodies from 64 B to 16 MiB.
+var bodySizeBuckets = prometheus.ExponentialBuckets(64, 4, 10)
+
+// knownMethods is the closed set of HTTP methods used as label values. Any
+// other method is recorded as _OTHER, following OpenTelemetry conventions.
+var knownMethods = map[string]struct{}{
+	http.MethodGet: {}, http.MethodHead: {}, http.MethodPost: {}, http.MethodPut: {},
+	http.MethodPatch: {}, http.MethodDelete: {}, http.MethodOptions: {},
 }
 
 // New returns Metrics with the Go runtime, process and build info collectors
@@ -45,7 +64,100 @@ func New(opts Options) *Metrics {
 			},
 		}, func() float64 { return 1 }),
 	)
-	return &Metrics{reg: reg}
+	m := &Metrics{
+		reg: reg,
+		serverDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "http_server_request_duration_seconds",
+			Help:    "Duration of inbound HTTP requests.",
+			Buckets: DurationBuckets,
+		}, []string{"http_request_method", "http_route", "http_response_status_code"}),
+		serverActive: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "http_server_active_requests",
+			Help: "Number of inbound HTTP requests currently in flight.",
+		}, []string{"http_request_method"}),
+		serverBodySize: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name:    "http_server_request_body_size_bytes",
+			Help:    "Declared size of inbound HTTP request bodies.",
+			Buckets: bodySizeBuckets,
+		}, []string{"http_request_method", "http_route"}),
+	}
+	reg.MustRegister(m.serverDuration, m.serverActive, m.serverBodySize)
+	return m
+}
+
+// Middleware returns the outer HTTP instrumentation. route maps a request to
+// its route template (for example /v1/pii/scopes/{scope_id}); it must never
+// return the actual path, and an unknown request maps to "". The middleware
+// observes every response, including admission rejections,
+// and a panic is recorded as 500 before being re-raised unchanged. A nil
+// *Metrics returns next unchanged.
+func (m *Metrics) Middleware(route func(*http.Request) string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		if m == nil {
+			return next
+		}
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			method := methodLabel(r.Method)
+			tmpl := route(r)
+			active := m.serverActive.WithLabelValues(method)
+			active.Inc()
+			if r.ContentLength >= 0 {
+				m.serverBodySize.WithLabelValues(method, tmpl).Observe(float64(r.ContentLength))
+			}
+			rec := &statusRecorder{ResponseWriter: w}
+			start := time.Now()
+			defer func() {
+				active.Dec()
+				status := rec.status
+				p := recover()
+				if p != nil {
+					status = http.StatusInternalServerError
+				} else if status == 0 {
+					status = http.StatusOK
+				}
+				m.serverDuration.WithLabelValues(method, tmpl, strconv.Itoa(status)).Observe(time.Since(start).Seconds())
+				if p != nil {
+					panic(p)
+				}
+			}()
+			next.ServeHTTP(rec, r)
+		})
+	}
+}
+
+// methodLabel returns method when it is a known HTTP method and _OTHER
+// otherwise, so a client cannot create unbounded label values.
+func methodLabel(method string) string {
+	if _, ok := knownMethods[method]; ok {
+		return method
+	}
+	return "_OTHER"
+}
+
+// statusRecorder records the first status written by the wrapped handler. It
+// never inspects or stores the response body.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	if s.status == 0 {
+		s.status = code
+	}
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusRecorder) Write(b []byte) (int, error) {
+	if s.status == 0 {
+		s.status = http.StatusOK
+	}
+	return s.ResponseWriter.Write(b)
+}
+
+// Unwrap lets http.ResponseController reach the underlying writer.
+func (s *statusRecorder) Unwrap() http.ResponseWriter {
+	return s.ResponseWriter
 }
 
 // Handler returns the http.Handler for GET /metrics. A nil *Metrics serves a

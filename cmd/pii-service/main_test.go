@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/klrushka/llm-proxy/internal/api"
+	"github.com/klrushka/llm-proxy/internal/audit"
 	"github.com/klrushka/llm-proxy/internal/config"
 	"github.com/klrushka/llm-proxy/internal/contextual"
 	"github.com/klrushka/llm-proxy/internal/detection"
@@ -1322,5 +1323,81 @@ func TestPublicAPIDoesNotServeMetrics(t *testing.T) {
 	rec := doJSON(t, newPublicHandler(t), http.MethodGet, "/metrics", "", nil)
 	if rec.Code == http.StatusOK {
 		t.Fatalf("GET /metrics on API listener status = %d, want not served", rec.Code)
+	}
+}
+
+// newInstrumentedHandler builds the real public API chain with metrics and the
+// given admission limit.
+func newInstrumentedHandler(t *testing.T, admissionLimit int) (http.Handler, *metrics.Metrics) {
+	t.Helper()
+	pipe, handlers := newTestPipeline(t)
+	op := process.NewOperation(process.NewStore(), func(ctx context.Context, payload string) (string, error) {
+		res, err := handlers.Tokenize(ctx, api.TokenizeRequest{Text: payload, ScopeID: processScope})
+		if err != nil {
+			return "", err
+		}
+		return res.TokenizedText, nil
+	})
+	cfg := config.Config{LLM: config.LLMConfig{Timeout: config.DefaultLLMTimeout}}
+	mux, err := buildRouter(cfg, pipe, handlers, op)
+	if err != nil {
+		t.Fatalf("buildRouter() error = %v", err)
+	}
+	m := metrics.New(metrics.Options{})
+	return composeHandler(cfg, audit.New(io.Discard), mux, m, admissionLimit), m
+}
+
+// scrapeMetrics returns the metrics exposition of m.
+func scrapeMetrics(t *testing.T, m *metrics.Metrics) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	m.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	return rec.Body.String()
+}
+
+// TestMetricsMeasureEveryRouteByTemplate proves every public route is measured
+// by method, route template and final status, and that the revoke scope_id and
+// unknown paths never reach the metrics.
+func TestMetricsMeasureEveryRouteByTemplate(t *testing.T) {
+	const scopeCanary = "SCOPE_CANARY_31337"
+	handler, m := newInstrumentedHandler(t, maxConcurrentRequests)
+
+	requests := []struct{ method, path, body, route string }{
+		{http.MethodPost, "/process", `{"payload":"Клиент Иванов Иван","payload_id":"id-1"}`, "/process"},
+		{http.MethodPost, "/v1/pii/detect", `{"text":"email ivanov@example.com"}`, "/v1/pii/detect"},
+		{http.MethodPost, "/v1/pii/tokenize", `{"text":"email ivanov@example.com","scope_id":"s1"}`, "/v1/pii/tokenize"},
+		{http.MethodPost, "/v1/pii/detokenize", `{"text":"x"}`, "/v1/pii/detokenize"},
+		{http.MethodDelete, "/v1/pii/scopes/" + scopeCanary, "", "/v1/pii/scopes/{scope_id}"},
+		{http.MethodPost, "/v1/runtime/chat", `{"text":"x","scope_id":"s3"}`, "/v1/runtime/chat"},
+		{http.MethodGet, "/health/live", "", "/health/live"},
+		{http.MethodGet, "/no/such/route", "", ""},
+	}
+	var want []string
+	for _, r := range requests {
+		rec := doJSON(t, handler, r.method, r.path, r.body, nil)
+		want = append(want, fmt.Sprintf(`http_server_request_duration_seconds_count{http_request_method=%q,http_response_status_code="%d",http_route=%q} 1`, r.method, rec.Code, r.route))
+	}
+
+	body := scrapeMetrics(t, m)
+	for _, w := range want {
+		if !strings.Contains(body, w) {
+			t.Errorf("metrics missing %s", w)
+		}
+	}
+	for _, leak := range []string{scopeCanary, "Иванов", "ivanov", "/no/such/route"} {
+		if strings.Contains(body, leak) {
+			t.Errorf("metrics leak %q", leak)
+		}
+	}
+}
+
+// TestMetricsMeasureOverloadRejections proves 429 from admission is measured.
+func TestMetricsMeasureOverloadRejections(t *testing.T) {
+	handler, m := newInstrumentedHandler(t, 0)
+	if rec := doJSON(t, handler, http.MethodPost, "/process", `{"payload":"x","payload_id":"id-1"}`, nil); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusTooManyRequests)
+	}
+	if body := scrapeMetrics(t, m); !strings.Contains(body, `http_server_request_duration_seconds_count{http_request_method="POST",http_response_status_code="429",http_route="/process"} 1`) {
+		t.Errorf("429 not measured")
 	}
 }

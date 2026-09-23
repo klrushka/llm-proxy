@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -135,8 +136,9 @@ func run() error {
 
 	// Audit surrounds admission so every admitted data request has exactly one
 	// safe event, including requests rejected while the service is overloaded.
-	admission := newAdmissionMiddleware(maxConcurrentRequests)
-	auditHandler := audit.Middleware(logger, audit.ModelMode(cfg.ModelMode))(admission(handler))
+	// The metrics middleware sits inside audit, so it can read the request's
+	// audit collector, and outside admission, so 429 responses are measured.
+	auditHandler := composeHandler(cfg, logger, handler, regMetrics, maxConcurrentRequests)
 
 	// Runtime executes model protection and the downstream LLM sequentially.
 	// Keep the socket write deadline above both configured upstream budgets so
@@ -196,6 +198,28 @@ func newServer(addr string, handler http.Handler, writeTimeout time.Duration) *h
 		ReadTimeout:       serverReadTimeout,
 		WriteTimeout:      writeTimeout,
 		IdleTimeout:       serverIdleTimeout,
+	}
+}
+
+// composeHandler builds the public API middleware chain:
+// audit -> metrics -> admission -> router.
+func composeHandler(cfg config.Config, logger *audit.Logger, mux *http.ServeMux, m *metrics.Metrics, admissionLimit int) http.Handler {
+	admission := newAdmissionMiddleware(admissionLimit)
+	instrument := m.Middleware(routeTemplate(mux))
+	return audit.Middleware(logger, audit.ModelMode(cfg.ModelMode))(instrument(admission(mux)))
+}
+
+// routeTemplate returns the metrics route resolver for mux. It reports the
+// matched ServeMux pattern without its method, for example
+// /v1/pii/scopes/{scope_id}, and never the actual request path. An unmatched
+// request resolves to "".
+func routeTemplate(mux *http.ServeMux) func(*http.Request) string {
+	return func(r *http.Request) string {
+		_, pattern := mux.Handler(r)
+		if i := strings.IndexByte(pattern, ' '); i >= 0 {
+			pattern = pattern[i+1:]
+		}
+		return pattern
 	}
 }
 
@@ -271,8 +295,8 @@ func (m *admissionMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 // is absent the route stays fail-closed with 503 so /process can run alone.
 // WithRuntime is appended only when the group is complete: a nil option would
 // panic in NewRouter, which calls every option unconditionally. It returns the
-// router as an http.Handler for the server middleware chain.
-func buildRouter(cfg config.Config, pipe *api.Pipeline, handlers api.PIIHandlers, op *process.Operation) (http.Handler, error) {
+// router mux for the server middleware chain.
+func buildRouter(cfg config.Config, pipe *api.Pipeline, handlers api.PIIHandlers, op *process.Operation) (*http.ServeMux, error) {
 	opts := []api.Option{
 		api.WithPIIHandlers(handlers),
 		api.WithProcess(op.Handle),

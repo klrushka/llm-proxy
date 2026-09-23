@@ -5,7 +5,7 @@
 
 ## 2. HTTP-метрики сервера
 
-- [ ] 2.1 Реализовать внешний middleware: `http_server_request_duration_seconds`, `http_server_active_requests`, `http_server_request_body_size_bytes` с метками метода, шаблона маршрута и статуса; observable check: tests для каждого маршрута, `401`/`403`/`429` и отсутствия `scope_id` в выводе проходят.
+- [x] 2.1 Реализовать внешний middleware: `http_server_request_duration_seconds`, `http_server_active_requests`, `http_server_request_body_size_bytes` с метками метода, шаблона маршрута и статуса; observable check: tests для каждого маршрута, `401`/`403`/`429` и отсутствия `scope_id` в выводе проходят.
 
 ## 3. Зависимости и домен
 
