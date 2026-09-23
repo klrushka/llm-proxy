@@ -2,6 +2,7 @@ package modelclient
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -66,3 +67,43 @@ func TestAllWorkerPostsShareCapacity(t *testing.T) {
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestQueuedWorkerPostCancellationDoesNotLeakPermit(t *testing.T) {
+	entered := make(chan struct{}, globalInferLimit)
+	release := make(chan struct{})
+	var calls atomic.Int64
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		if r.URL.Path == "/plan_windows" {
+			entered <- struct{}{}
+			<-release
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(planJSON(1, 510, planWindowJSON(0, 3, 1)))), Header: make(http.Header)}, nil
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(responseJSON(entityJSON("FULL_NAME", 0, 1, 0.9, "rubert"), entityJSON("PER", 0, 1, 0.9, "gliner")))), Header: make(http.Header)}, nil
+	})
+	c, err := New("http://worker.test", ModeFull, time.Second, WithTransport(rt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < globalInferLimit; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); _, _ = c.PlanWindows(context.Background(), "abc", 0) }()
+	}
+	for i := 0; i < globalInferLimit; i++ {
+		<-entered
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := c.Infer(ctx, "abc"); !errors.Is(err, context.Canceled) || !errors.Is(err, ErrModelUnavailable) {
+		t.Fatalf("queued canceled Infer error = %v", err)
+	}
+	if got := calls.Load(); got != globalInferLimit {
+		t.Fatalf("worker calls after canceled wait = %d, want %d", got, globalInferLimit)
+	}
+	close(release)
+	wg.Wait()
+	if _, err := c.Infer(context.Background(), "abc"); err != nil {
+		t.Fatalf("post-release Infer = %v", err)
+	}
+}

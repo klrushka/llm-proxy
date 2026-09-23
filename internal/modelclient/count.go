@@ -51,6 +51,8 @@ func (c *Client) CountTokens(ctx context.Context, text string) (int, error) {
 	if !utf8.ValidString(text) {
 		return 0, ErrInvalidInput
 	}
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
 
 	body, err := json.Marshal(map[string]string{"text": text})
 	if err != nil {
@@ -63,6 +65,10 @@ func (c *Client) CountTokens(ctx context.Context, text string) (int, error) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
+	if err := c.acquireGlobal(ctx); err != nil {
+		return 0, err
+	}
+	defer c.releaseGlobal()
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return 0, wrapTransport(err)

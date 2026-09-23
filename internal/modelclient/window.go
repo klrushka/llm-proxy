@@ -108,20 +108,6 @@ func (c *Client) InferWindows(ctx context.Context, windows []Window, concurrency
 			defer wg.Done()
 			defer func() { <-permits }()
 
-			// Acquire a global permit shared across all requests on this
-			// Client before issuing the HTTP call. The wait respects context
-			// cancellation and never starts a new HTTP request on failure.
-			if err := c.acquireGlobal(ctx); err != nil {
-				mu.Lock()
-				if firstErr == nil {
-					firstErr = err
-				}
-				mu.Unlock()
-				cancel()
-				return
-			}
-			defer c.releaseGlobal()
-
 			entities, err := c.Infer(ctx, w.Text)
 			if err != nil {
 				mu.Lock()
@@ -196,13 +182,17 @@ func (c *Client) InferBounded(ctx context.Context, text string, overlapTokens, c
 	return ReconstructGlobalOffsets(windows)
 }
 
-// acquireGlobal blocks until a global /infer permit is available or ctx is
+// acquireGlobal blocks until a worker POST permit is available or ctx is
 // done. On cancellation it returns a safe transport-classified error that
 // matches ErrModelUnavailable while preserving context identity, so no new HTTP
 // request is started.
 func (c *Client) acquireGlobal(ctx context.Context) error {
 	select {
 	case c.globalSem <- struct{}{}:
+		if err := ctx.Err(); err != nil {
+			c.releaseGlobal()
+			return wrapTransport(err)
+		}
 		return nil
 	case <-ctx.Done():
 		return wrapTransport(ctx.Err())

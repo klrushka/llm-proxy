@@ -60,6 +60,8 @@ func (c *Client) PlanWindows(ctx context.Context, text string, overlapTokens int
 	if !utf8.ValidString(text) {
 		return nil, ErrInvalidInput
 	}
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
 
 	body, err := json.Marshal(map[string]any{"text": text, "overlap_tokens": overlapTokens})
 	if err != nil {
@@ -72,6 +74,10 @@ func (c *Client) PlanWindows(ctx context.Context, text string, overlapTokens int
 	}
 	req.Header.Set("Content-Type", "application/json")
 
+	if err := c.acquireGlobal(ctx); err != nil {
+		return nil, err
+	}
+	defer c.releaseGlobal()
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, wrapTransport(err)

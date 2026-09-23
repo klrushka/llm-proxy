@@ -35,7 +35,7 @@ const (
 	modelGliner = "gliner"
 )
 
-// globalInferLimit is the fixed cap on concurrent /infer HTTP calls across all
+// globalInferLimit is the fixed cap on concurrent expensive worker POSTs across all
 // requests sharing one Client instance. It is a safety backpressure bound
 // independent of any per-request concurrency limit.
 const globalInferLimit = 4
@@ -164,6 +164,8 @@ func (c *Client) Infer(ctx context.Context, text string) ([]Entity, error) {
 	if c.mode == ModeFast {
 		return nil, nil
 	}
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
 
 	body, err := json.Marshal(map[string]string{"text": text})
 	if err != nil {
@@ -176,6 +178,10 @@ func (c *Client) Infer(ctx context.Context, text string) ([]Entity, error) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
+	if err := c.acquireGlobal(ctx); err != nil {
+		return nil, err
+	}
+	defer c.releaseGlobal()
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, wrapTransport(err)
